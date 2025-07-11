@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 # Dictionary to track scan counts and timestamps
 scan_tracker = defaultdict(lambda: {"count": 0, "timestamp": None})
 
+# Dictionary to track access attempts per port
+port_tracker = defaultdict(lambda: {"count": 0, "timestamp": None})
+
 # Duration to block an IP (10 minutes)
 BLOCK_DURATION = timedelta(minutes=10)
 
@@ -62,8 +65,25 @@ def handle_packet(packet):
             scan_tracker[src_ip]["count"] += 1
             scan_tracker[src_ip]["timestamp"] = current_time
 
+            # Track port access attempts
+            if port_tracker[port]["timestamp"] and current_time - port_tracker[port]["timestamp"] > BLOCK_DURATION:
+                # Reset port tracker after block duration
+                port_tracker[port] = {"count": 0, "timestamp": None}
+
+            port_tracker[port]["count"] += 1
+            port_tracker[port]["timestamp"] = current_time
+
+            # Block if IP exceeds limit OR if port is under distributed attack
             if scan_tracker[src_ip]["count"] > 3:
                 print(f"🚫 IP {src_ip} exceeded scan limit, blocking for 10 minutes...")
+                block_ip(src_ip)
+                # Schedule unblock
+                unblock_time = datetime.now() + BLOCK_DURATION
+                print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
+                return
+            elif port_tracker[port]["count"] > 10:  # Higher threshold for distributed attacks
+                print(f"🚫 Port {port} under distributed attack ({port_tracker[port]['count']} attempts), blocking IP {src_ip}...")
                 block_ip(src_ip)
                 # Schedule unblock
                 unblock_time = datetime.now() + BLOCK_DURATION
