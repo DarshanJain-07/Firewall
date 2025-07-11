@@ -14,6 +14,8 @@ NOTE: THIS SCRIPT WORKS ONLY ON LINUX AND UNIX BASED OPERATING SYSTEMS.
 - **Real-time Monitoring**: Live packet inspection with immediate response
 - **Scan Threshold Control**: Configurable scan count limit (currently 3 scans)
 - **SYN-ACK Honeypot Response**: Responds to scans to gather more intelligence
+- **🆕 Distributed Attack Prevention**: Tracks access attempts per port to counter coordinated attacks from multiple IPs
+- **🆕 Port-Specific Thresholds**: Different blocking thresholds for different ports (e.g., port 80 blocks after 2 attempts, port 8000 after 10)
 
 ### 🎯 **Problems Currently Solved**
 1. **Port Scan Detection**: Identifies reconnaissance attempts on your system
@@ -21,12 +23,14 @@ NOTE: THIS SCRIPT WORKS ONLY ON LINUX AND UNIX BASED OPERATING SYSTEMS.
 3. **False Positive Prevention**: Whitelists trusted IPs to avoid blocking legitimate traffic
 4. **Temporary Mitigation**: Provides cooling-off period for blocked IPs
 5. **Basic Threat Intelligence**: Logs scanning attempts with timestamps
+6. **🆕 Distributed Attack Mitigation**: Prevents coordinated brute force attacks from multiple IPs targeting single ports
+7. **🆕 Service-Aware Protection**: Applies appropriate security levels based on port sensitivity (web servers vs development ports)
 
 ## 🚀 Planned Advanced Features
 
 ### 🔍 **Enhanced Scan Detection**
 - [ ] **Multiple Scan Types**: Detect SYN, FIN, NULL, XMAS, UDP, and stealth scans
-- [ ] **Distributed Scan Detection**: Identify coordinated attacks from multiple IPs targeting same ports
+- [x] **Distributed Scan Detection**: Identify coordinated attacks from multiple IPs targeting same ports ✅
 - [ ] **Time-based Analysis**: Detect slow/low-intensity scans spread over time
 - [ ] **Behavioral Analysis**: Identify abnormal traffic patterns (>300% of 30-day average)
 - [ ] **Geo-location Filtering**: Block/allow traffic based on geographic origin
@@ -114,8 +118,18 @@ sudo python3 firewall.py
 ```python
 # Adjust these variables in firewall.py:
 BLOCK_DURATION = timedelta(minutes=10)  # How long to block IPs
-SCAN_THRESHOLD = 3                      # Scans before blocking
+SCAN_THRESHOLD = 3                      # Scans before blocking (per IP)
 TRUSTED_IPS = {...}                     # IPs that bypass blocking
+
+# Port-specific thresholds for distributed attack detection
+PORT_THRESHOLDS = {
+    80: 2,      # Web server - stricter (2 attempts)
+    443: 2,     # HTTPS - stricter (2 attempts)
+    22: 3,      # SSH - moderate (3 attempts)
+    8000: 10,   # Development server - lenient (10 attempts)
+    8080: 10,   # Alternative HTTP - lenient (10 attempts)
+}
+DEFAULT_PORT_THRESHOLD = 10             # Default for unlisted ports
 ```
 
 ## 📁 Project Structure
@@ -129,7 +143,8 @@ TRUSTED_IPS = {...}                     # IPs that bypass blocking
 
 ### Phase 1: Enhanced Detection (Next)
 - Implement FIN, NULL, XMAS scan detection
-- Add distributed scan detection
+- ✅ Add distributed scan detection (COMPLETED)
+- ✅ Port-specific threshold configuration (COMPLETED)
 - Create basic configuration file support
 
 ### Phase 2: Intelligence Integration

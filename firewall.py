@@ -16,8 +16,22 @@ BLOCK_DURATION = timedelta(minutes=10)
 TRUSTED_IPS = {
     "192.168.1.1",
     "192.168.1.100",
-    "127.0.0.1"     
+    "127.0.0.1"
 }
+
+# Port-specific thresholds for distributed attack detection
+PORT_THRESHOLDS = {
+    80: 2,      # Web server - stricter
+    443: 2,     # HTTPS - stricter
+    22: 3,      # SSH - moderate
+    8000: 10,   # Development server - lenient
+    8080: 10,   # Alternative HTTP - lenient
+    3306: 5,    # MySQL - moderate
+    5432: 5,    # PostgreSQL - moderate
+}
+
+# Default threshold for ports not specified above
+DEFAULT_PORT_THRESHOLD = 10
 
 def is_ip_blocked(ip):
     """Check if the IP is already blocked in iptables."""
@@ -82,8 +96,9 @@ def handle_packet(packet):
                 print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
                 return
-            elif port_tracker[port]["count"] > 10:  # Higher threshold for distributed attacks
-                print(f"🚫 Port {port} under distributed attack ({port_tracker[port]['count']} attempts), blocking IP {src_ip}...")
+            elif port_tracker[port]["count"] > PORT_THRESHOLDS.get(port, DEFAULT_PORT_THRESHOLD):
+                threshold = PORT_THRESHOLDS.get(port, DEFAULT_PORT_THRESHOLD)
+                print(f"🚫 Port {port} under distributed attack ({port_tracker[port]['count']} > {threshold} attempts), blocking IP {src_ip}...")
                 block_ip(src_ip)
                 # Schedule unblock
                 unblock_time = datetime.now() + BLOCK_DURATION
