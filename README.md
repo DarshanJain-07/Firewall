@@ -1,207 +1,271 @@
-# Python Firewall & Intrusion Detection System
+# Advanced Firewall System
 
-A lightweight, real-time firewall and intrusion detection system built with Python and Scapy. This script monitors network traffic, detects port scanning attempts, and automatically blocks malicious IPs using iptables.
+A comprehensive Python-based firewall with distributed attack prevention, subnet support, monitoring, and security hardening features.
 
-NOTE: THIS SCRIPT WORKS ONLY ON LINUX AND UNIX BASED OPERATING SYSTEMS.
+**NOTE: THIS SYSTEM WORKS ONLY ON LINUX AND UNIX BASED OPERATING SYSTEMS.**
 
 ## 🔥 Current Features
 
-### ✅ **Implemented**
-- **SYN Scan Detection**: Monitors TCP SYN packets to detect port scanning attempts
-- **Automatic IP Blocking**: Uses iptables to block IPs that exceed scan thresholds
-- **Trusted IP Whitelist**: Hardcoded set of trusted IPs that bypass all blocking logic
-- **Temporary Blocking**: Automatically unblocks IPs after a configurable duration (10 minutes default)
-- **Real-time Monitoring**: Live packet inspection with immediate response
-- **Scan Threshold Control**: Configurable scan count limit (currently 3 scans)
-- **SYN-ACK Honeypot Response**: Responds to scans to gather more intelligence
-- **🆕 Distributed Attack Prevention**: Tracks access attempts per port to counter coordinated attacks from multiple IPs
-- **🆕 Port-Specific Thresholds**: Different blocking thresholds for different ports (e.g., port 80 blocks after 2 attempts, port 8000 after 10)
+### ✅ **Core Protection**
+- **Port Scan Detection**: Blocks IPs scanning multiple unique ports (threshold: 7 ports)
+- **Distributed Attack Prevention**: Port-specific thresholds to counter IP rotation attacks
+- **Progressive Blocking**: Escalating ban durations (10min → 2hrs → 1day → 1week)
+- **Subnet Support**: Trusted IP lists support CIDR notation for corporate networks
+- **Reverse Proxy Compatible**: Handles corporate subnet systems with shared global IPs
 
-### 🎯 **Problems Currently Solved**
-1. **Port Scan Detection**: Identifies reconnaissance attempts on your system
-2. **Automated Defense**: Blocks attackers without manual intervention
-3. **False Positive Prevention**: Whitelists trusted IPs to avoid blocking legitimate traffic
-4. **Temporary Mitigation**: Provides cooling-off period for blocked IPs
-5. **Basic Threat Intelligence**: Logs scanning attempts with timestamps
-6. **🆕 Distributed Attack Mitigation**: Prevents coordinated brute force attacks from multiple IPs targeting single ports
-7. **🆕 Service-Aware Protection**: Applies appropriate security levels based on port sensitivity (web servers vs development ports)
+### ✅ **Monitoring & Health Checks**
+- **Process Monitoring**: Optimized PID-based health checks every minute
+- **Functional Testing**: Daily verification that blocking actually works
+- **Auto-Restart**: Automatically restarts firewall if down or malfunctioning
+- **File Integrity**: SHA256 hash verification prevents script tampering
 
-## 🚀 Planned Advanced Features
+### ✅ **Security Hardening**
+- **File Integrity Monitoring**: Detects unauthorized script modifications
+- **Root-Only Permissions**: Critical files can only be modified by root
+- **Tamper Detection**: Monitor stops immediately if files are compromised
 
-### 🔍 **Enhanced Scan Detection**
-- [ ] **Multiple Scan Types**: Detect SYN, FIN, NULL, XMAS, UDP, and stealth scans
-- [x] **Distributed Scan Detection**: Identify coordinated attacks from multiple IPs targeting same ports ✅
-- [ ] **Time-based Analysis**: Detect slow/low-intensity scans spread over time
-- [ ] **Behavioral Analysis**: Identify abnormal traffic patterns (>300% of 30-day average)
-- [ ] **Geo-location Filtering**: Block/allow traffic based on geographic origin
+### 🎯 **Problems Solved**
+1. **Port Scan Detection**: Identifies reconnaissance attempts across multiple ports
+2. **Distributed Attacks**: Protects against IP rotation and coordinated brute force
+3. **Corporate Networks**: Supports subnet whitelisting for business environments
+4. **System Reliability**: Auto-monitoring and restart capabilities
+5. **Script Tampering**: File integrity protection prevents unauthorized modifications
+6. **Progressive Deterrence**: Escalating penalties discourage persistent attackers
+7. **Service-Aware Protection**: Critical ports get stricter protection than development ports
+8. **Business Continuity**: Legitimate users can access same ports repeatedly without blocks
 
-### 🌐 **Threat Intelligence Integration**
-- [ ] **External Threat Feeds**: Integration with AbuseIPDB, VirusTotal, and other threat databases
-- [ ] **Reputation Scoring**: Dynamic IP reputation based on multiple threat sources
-- [ ] **IOC Matching**: Automatic blocking of known malicious indicators
-- [ ] **Threat Feed Updates**: Real-time updates from security vendors
+## ⚙️ Configuration
 
-### ⚙️ **Configuration & Profiles**
-- [ ] **External Config Files**: YAML/JSON configuration for thresholds, timeouts, and rules
-- [ ] **Environment Profiles**: Different sensitivity levels (Normal, Aggressive, Paranoid)
-- [ ] **Dynamic Thresholds**: Adaptive limits based on network baseline
-- [ ] **Rule Engine**: Custom blocking rules with complex conditions
-
-### 📊 **Monitoring & Alerting**
-- [ ] **Structured Logging**: JSON-formatted logs for better parsing and analysis
-- [ ] **Metrics Collection**: Prometheus/Grafana integration for dashboards
-- [ ] **Real-time Alerts**: Email, Slack, webhook notifications for critical events
-- [ ] **Health Monitoring**: Self-monitoring with status checks and diagnostics
-- [ ] **Performance Metrics**: Latency, throughput, and resource usage tracking
-
-### 🏗️ **Architecture & Performance**
-- [ ] **Persistent State**: Maintain scan history and IP reputation across restarts
-- [ ] **Async Processing**: Non-blocking packet processing with async/await
-- [ ] **Queue-based Architecture**: High-throughput processing for enterprise environments
-- [ ] **Graceful Degradation**: Continue monitoring even when iptables operations fail
-- [ ] **Resource Optimization**: Cron-based cleanup and memory management
-
-### 🛡️ **Advanced Security Features**
-- [ ] **DDoS Protection**: Rate limiting and connection throttling
-- [ ] **Protocol Analysis**: Deep packet inspection for application-layer attacks
-- [ ] **Honeypot Integration**: Advanced deception techniques
-- [ ] **Machine Learning**: Anomaly detection using behavioral models
-- [ ] **Incident Response**: Automated response playbooks for different attack types
-
-## 📋 Use Cases
-
-### 🏠 **Home Networks**
-- Protect personal devices from internet scanning
-- Monitor suspicious activity on home routers
-- Block known malicious IPs automatically
-
-### 🏢 **Small Business**
-- Protect web servers and databases from reconnaissance
-- Monitor employee network activity
-- Implement basic intrusion detection
-
-### 🏭 **Enterprise (Future)**
-- High-volume traffic analysis
-- Integration with SIEM systems
-- Compliance monitoring and reporting
-- Multi-site deployment coordination
-
-## 🚀 Quick Start
-
-### Prerequisites
-```bash
-# Install required packages
-sudo apt update
-sudo apt install python3-pip
-pip3 install scapy
-
-# Ensure iptables is available
-sudo iptables --version
+### Port-Specific Thresholds
+```python
+PORT_THRESHOLDS = {
+    80: 2,      # Web server - stricter
+    443: 2,     # HTTPS - stricter
+    22: 3,      # SSH - moderate
+    8000: 10,   # Development server - lenient
+    8080: 10,   # Alternative HTTP - lenient
+    3306: 5,    # MySQL - moderate
+    5432: 5,    # PostgreSQL - moderate
+}
 ```
 
-### Basic Usage
-```bash
-# 1. Edit trusted IPs in firewall.py
+### Trusted Networks
+```python
 TRUSTED_IPS = {
-    "192.168.1.1",      # Your router
-    "192.168.1.100",    # Your computer
-    "127.0.0.1",        # Localhost
+    "192.168.1.1",      # Individual IPs
+    "127.0.0.1",
+    "192.168.0.0/16",   # Corporate subnet
+    "10.0.0.0/8"        # Private network
 }
+```
 
-# 2. Run the firewall (requires root for packet capture and iptables)
+## Installation & Setup
+
+### 1. File Permissions Setup
+```bash
+# Make control script executable
+chmod +x firewall_control.sh
+
+# Make security setup script executable
+chmod +x secure_setup.sh
+```
+
+### 2. Security Hardening
+```bash
+# Run security setup (creates integrity hashes, sets permissions)
+sudo ./secure_setup.sh
+```
+
+This script will:
+- Create SHA256 integrity hash for `firewall.py`
+- Set `firewall.py` as read-only, root-owned (`chmod 644`)
+- Set `monitor_firewall.py` as executable, root-owned (`chmod 755`)
+- Set `firewall.py.sha256` as read-only, root-owned (`chmod 644`)
+
+### 3. Dependencies
+```bash
+pip install scapy
+```
+
+## Usage
+
+### Quick Start
+```bash
+# Start firewall with monitoring (recommended)
+sudo ./firewall_control.sh monitor
+
+# Check status
+./firewall_control.sh status
+```
+
+### Manual Control
+```bash
+# Start firewall only
+sudo ./firewall_control.sh start
+
+# Stop everything
+sudo ./firewall_control.sh stop
+
+# Restart firewall
+sudo ./firewall_control.sh restart
+```
+
+### Direct Execution
+```bash
+# Run firewall directly
 sudo python3 firewall.py
 
-# 3. Monitor the output for scan detection and blocking
+# Run monitor directly
+sudo python3 monitor_firewall.py
 ```
 
-### Configuration
+## File Structure
+
+```
+├── firewall.py              # Main firewall logic
+├── monitor_firewall.py      # Health monitoring & auto-restart
+├── firewall_control.sh      # Control script
+├── secure_setup.sh          # Security hardening script
+├── firewall.py.sha256       # Integrity hash (auto-generated)
+└── README.md               # This file
+```
+
+## Security Features
+
+### File Integrity Protection
+- **SHA256 Verification**: Monitor checks file integrity every minute
+- **Tamper Detection**: Stops immediately if `firewall.py` is modified
+- **Root Ownership**: Only root can modify critical files
+
+### Permission Structure
+```bash
+# After running secure_setup.sh:
+-rw-r--r-- root:root firewall.py           # Read-only, root owned
+-rwxr-xr-x root:root monitor_firewall.py   # Executable, root owned
+-rw-r--r-- root:root firewall.py.sha256    # Read-only, root owned
+-rwxr-xr-x user:user firewall_control.sh   # User executable
+```
+
+## Monitoring Details
+
+### Process Monitoring (Every Minute)
+- **Optimized PID Check**: Uses stored PID + `os.kill(pid, 0)` for fast verification
+- **Fallback**: Auto-falls back to `pgrep` if permission issues
+- **Auto-Restart**: Immediately restarts if process is down
+
+### Functional Testing (Daily)
+- **Real Attack Simulation**: Sends packets from fake IP to 8 ports
+- **Blocking Verification**: Checks if test IP gets blocked in iptables
+- **Clean Cleanup**: Removes test IP after verification
+- **Safety**: Only runs once per day to avoid self-blocking
+
+## Troubleshooting
+
+### Common Issues
+
+**Permission Denied**
+```bash
+# Ensure running as root for iptables access
+sudo python3 monitor_firewall.py
+```
+
+**Integrity Check Failed**
+```bash
+# Recreate integrity hash if legitimate changes made
+sudo python3 -c "
+import hashlib
+with open('firewall.py', 'rb') as f:
+    hash_val = hashlib.sha256(f.read()).hexdigest()
+with open('firewall.py.sha256', 'w') as f:
+    f.write(hash_val)
+"
+```
+
+**Monitor Not Starting**
+```bash
+# Check if scapy is installed
+pip install scapy
+
+# Verify file permissions
+ls -la firewall.py monitor_firewall.py
+```
+
+## Advanced Configuration
+
+### Custom Thresholds
+Edit `firewall.py` (requires root):
 ```python
-# Adjust these variables in firewall.py:
-BLOCK_DURATION = timedelta(minutes=10)  # How long to block IPs
-SCAN_THRESHOLD = 3                      # Scans before blocking (per IP)
-TRUSTED_IPS = {...}                     # IPs that bypass blocking
+UNIQUE_PORTS_THRESHOLD = 7  # Ports before blocking
+ACTIVITY_WINDOW = timedelta(hours=2)  # Tracking window
+```
 
-# Port-specific thresholds for distributed attack detection
-PORT_THRESHOLDS = {
-    80: 2,      # Web server - stricter (2 attempts)
-    443: 2,     # HTTPS - stricter (2 attempts)
-    22: 3,      # SSH - moderate (3 attempts)
-    8000: 10,   # Development server - lenient (10 attempts)
-    8080: 10,   # Alternative HTTP - lenient (10 attempts)
+### Custom Block Durations
+```python
+BLOCK_DURATIONS = [
+    timedelta(minutes=10),  # First offense
+    timedelta(hours=2),     # Second offense
+    timedelta(days=1),      # Third offense
+    timedelta(days=7)       # Fourth+ offense
+]
+```
+
+### Adding Trusted Networks
+```python
+TRUSTED_IPS = {
+    "your.trusted.ip",
+    "192.168.0.0/24",      # Your subnet
+    "10.0.0.0/8"           # Corporate network
 }
-DEFAULT_PORT_THRESHOLD = 10             # Default for unlisted ports
 ```
 
-## 📁 Project Structure
-```
-├── firewall.py              # Main firewall script
-├── README.md                # This documentation
-└── logs/                    # Future: Log files directory
-```
+## Architecture
 
-## 🔧 Development Roadmap
+### Attack Detection Logic
+1. **Unique Port Scanning**: Tracks ports accessed per IP over time window
+2. **Distributed Attacks**: Monitors access attempts per port across all IPs
+3. **Progressive Blocking**: Increases ban duration for repeat offenders
+4. **Trusted Bypass**: Skips all checks for trusted IPs/subnets
 
-### Phase 1: Enhanced Detection (Next)
-- Implement FIN, NULL, XMAS scan detection
-- ✅ Add distributed scan detection (COMPLETED)
-- ✅ Port-specific threshold configuration (COMPLETED)
-- Create basic configuration file support
+### Monitoring Architecture
+1. **Primary Check**: Fast PID verification every minute
+2. **Secondary Check**: Functional blocking test once daily
+3. **Auto-Recovery**: Restarts firewall if either check fails
+4. **Security Validation**: Integrity check prevents tampering
 
-### Phase 2: Intelligence Integration
-- AbuseIPDB API integration
-- Basic threat feed processing
-- Geo-location blocking
+## Complete Setup Checklist
 
-### Phase 3: Enterprise Features
-- Async processing architecture
-- Metrics and monitoring
-- Advanced alerting system
-
-### Phase 4: Machine Learning
-- Behavioral analysis
-- Anomaly detection
-- Predictive blocking
-
-## 🤝 Contributing
-
-This is a learning project that will evolve over time. Future contributions welcome for:
-- New scan detection algorithms
-- Performance optimizations
-- Integration with security tools
-- Documentation improvements
-
-## ⚠️ Security Notice
-
-- **Root Required**: Script needs root privileges for packet capture and iptables
-- **Testing**: Always test in a controlled environment first
-- **Backup**: Backup your iptables rules before running
-- **Monitoring**: Monitor system performance and network connectivity
-
-## 🛠️ Useful Commands
-
-### TCPDUMP Commands
+### Initial Setup
 ```bash
-# Show packets with SYN flags
-tcpdump -i eth0 'tcp[tcpflags] & tcp-syn != 0'
+# 1. Install dependencies
+pip install scapy
 
-# Exclude Port 22 (SSH Traffic)
-sudo tcpdump -i any tcp and not port 22 -X
+# 2. Make scripts executable
+chmod +x firewall_control.sh
+chmod +x secure_setup.sh
 
-# Filter traffic from specific IP
-tcpdump -i any src host <specific-ip> -X
+# 3. Run security hardening
+sudo ./secure_setup.sh
 ```
 
-### IPTABLES Commands
+### File Permissions After Setup
 ```bash
-# Add iptables rule
-iptables -A INPUT -s <ip> -j DROP
-
-# Delete iptables rule
-iptables -D INPUT -s <ip> -j DROP
-
-# List iptables rules
-iptables -L -n -v
-
-# Flush all iptables rules
-iptables -F
+# Verify permissions are correct:
+ls -la firewall.py          # Should be: -rw-r--r-- root:root
+ls -la monitor_firewall.py  # Should be: -rwxr-xr-x root:root
+ls -la firewall.py.sha256   # Should be: -rw-r--r-- root:root
+ls -la firewall_control.sh  # Should be: -rwxr-xr-x user:user
 ```
+
+### Running the System
+```bash
+# Start with monitoring (recommended)
+sudo ./firewall_control.sh monitor
+
+# Or start components separately
+sudo ./firewall_control.sh start
+sudo python3 monitor_firewall.py
+```
+
+## License
+
+This project is for educational and security research purposes.

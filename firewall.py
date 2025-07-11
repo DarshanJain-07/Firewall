@@ -2,21 +2,38 @@ from scapy.all import *
 import subprocess
 from collections import defaultdict
 from datetime import datetime, timedelta
+import ipaddress
 
-# Dictionary to track scan counts and timestamps
-scan_tracker = defaultdict(lambda: {"count": 0, "timestamp": None})
+# Track unique ports accessed per IP over time window
+ip_activity = defaultdict(lambda: {
+    "unique_ports": set(),
+    "first_seen": None,
+    "last_seen": None,
+    "block_count": 0  # Track how many times this IP has been blocked
+})
 
-# Dictionary to track access attempts per port
-port_tracker = defaultdict(lambda: {"count": 0, "timestamp": None})
+# Track access attempts per port (for distributed attack protection)
+port_access_tracker = defaultdict(lambda: {"count": 0, "timestamp": None})
 
-# Duration to block an IP (10 minutes)
-BLOCK_DURATION = timedelta(minutes=10)
+# Thresholds and timing
+UNIQUE_PORTS_THRESHOLD = 7  # Block after scanning 7+ different ports
+ACTIVITY_WINDOW = timedelta(hours=2)  # Track activity over 2 hours
 
-# Trusted IPs that will never be blocked (add your trusted IPs here)
+# Progressive blocking durations
+BLOCK_DURATIONS = [
+    timedelta(minutes=10),  # First offense: 10 minutes
+    timedelta(hours=2),     # Second offense: 2 hours
+    timedelta(days=1),      # Third offense: 1 day
+    timedelta(days=7)       # Fourth+ offense: 1 week
+]
+
+# Trusted IPs and subnets that will never be blocked (supports CIDR notation)
 TRUSTED_IPS = {
     "192.168.1.1",
     "192.168.1.100",
-    "127.0.0.1"
+    "127.0.0.1",
+    "192.168.0.0/16",  # Corporate subnet example
+    "10.0.0.0/8"       # Private network example
 }
 
 # Port-specific thresholds for distributed attack detection
@@ -58,50 +75,86 @@ def unblock_ip(ip):
     except subprocess.CalledProcessError as e:
         print(f"Error unblocking IP {ip}: {e}")
 
+def is_trusted_ip(ip):
+    """Check if IP is in trusted list (supports both individual IPs and CIDR subnets)."""
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        for trusted in TRUSTED_IPS:
+            if '/' in trusted:  # CIDR subnet
+                if ip_obj in ipaddress.ip_network(trusted, strict=False):
+                    return True
+            else:  # Individual IP
+                if ip == trusted:
+                    return True
+        return False
+    except ValueError:
+        return False
+
 def handle_packet(packet):
     if TCP in packet and packet[TCP].flags == "S":  # SYN flag detected
         src_ip = packet[IP].src
         port = packet[TCP].dport
         src_port = packet[TCP].sport
 
-        # Check if IP is in trusted list - skip all processing if it is
-        if src_ip in TRUSTED_IPS:
+        # Check if IP is in trusted list or subnet - skip all processing if it is
+        if is_trusted_ip(src_ip):
             print(f"✅ Trusted IP {src_ip} accessing port {port} - allowing")
         else:
-            print(f"🔍 Scan detected on port {port} from {src_ip}")
+            print(f"🔍 Access detected on port {port} from {src_ip}")
 
-            # Check and update scan count
+            # Track unique port access
             current_time = datetime.now()
-            if scan_tracker[src_ip]["timestamp"] and current_time - scan_tracker[src_ip]["timestamp"] > BLOCK_DURATION:
-                # Reset tracker after block duration
-                scan_tracker[src_ip] = {"count": 0, "timestamp": None}
+            activity = ip_activity[src_ip]
 
-            scan_tracker[src_ip]["count"] += 1
-            scan_tracker[src_ip]["timestamp"] = current_time
+            # Reset activity if outside time window
+            if activity["first_seen"] and current_time - activity["first_seen"] > ACTIVITY_WINDOW:
+                ip_activity[src_ip] = {
+                    "unique_ports": {port},
+                    "first_seen": current_time,
+                    "last_seen": current_time,
+                    "block_count": activity["block_count"]  # Preserve block count for progressive blocking
+                }
+            else:
+                # Update activity
+                if not activity["first_seen"]:
+                    activity["first_seen"] = current_time
+                activity["unique_ports"].add(port)
+                activity["last_seen"] = current_time
 
-            # Track port access attempts
-            if port_tracker[port]["timestamp"] and current_time - port_tracker[port]["timestamp"] > BLOCK_DURATION:
-                # Reset port tracker after block duration
-                port_tracker[port] = {"count": 0, "timestamp": None}
+            # Track port access attempts (distributed attack protection)
+            if port_access_tracker[port]["timestamp"] and current_time - port_access_tracker[port]["timestamp"] > ACTIVITY_WINDOW:
+                # Reset port tracker after activity window
+                port_access_tracker[port] = {"count": 0, "timestamp": None}
 
-            port_tracker[port]["count"] += 1
-            port_tracker[port]["timestamp"] = current_time
+            port_access_tracker[port]["count"] += 1
+            port_access_tracker[port]["timestamp"] = current_time
 
-            # Block if IP exceeds limit OR if port is under distributed attack
-            if scan_tracker[src_ip]["count"] > 3:
-                print(f"🚫 IP {src_ip} exceeded scan limit, blocking for 10 minutes...")
+            # Check for distributed attack on sensitive ports
+            port_threshold = PORT_THRESHOLDS.get(port, DEFAULT_PORT_THRESHOLD)
+            if port_access_tracker[port]["count"] > port_threshold:
+                print(f"🚫 Port {port} under distributed attack ({port_access_tracker[port]['count']} > {port_threshold} attempts), blocking IP {src_ip}...")
                 block_ip(src_ip)
-                # Schedule unblock
-                unblock_time = datetime.now() + BLOCK_DURATION
+                # Schedule unblock (use first offense duration for port-based blocks)
+                unblock_time = datetime.now() + BLOCK_DURATIONS[0]
                 print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
                 return
-            elif port_tracker[port]["count"] > PORT_THRESHOLDS.get(port, DEFAULT_PORT_THRESHOLD):
-                threshold = PORT_THRESHOLDS.get(port, DEFAULT_PORT_THRESHOLD)
-                print(f"🚫 Port {port} under distributed attack ({port_tracker[port]['count']} > {threshold} attempts), blocking IP {src_ip}...")
+
+            # Block if scanning multiple unique ports
+            unique_port_count = len(activity["unique_ports"])
+            if unique_port_count > UNIQUE_PORTS_THRESHOLD:
+                # Progressive blocking - get duration based on offense count
+                block_count = activity["block_count"]
+                duration_index = min(block_count, len(BLOCK_DURATIONS) - 1)
+                block_duration = BLOCK_DURATIONS[duration_index]
+
+                # Increment block count for this IP
+                activity["block_count"] += 1
+
+                print(f"🚫 IP {src_ip} scanned {unique_port_count} unique ports (offense #{activity['block_count']}), blocking for {block_duration}...")
                 block_ip(src_ip)
                 # Schedule unblock
-                unblock_time = datetime.now() + BLOCK_DURATION
+                unblock_time = datetime.now() + block_duration
                 print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
                 return
