@@ -3,6 +3,8 @@ import subprocess
 from collections import defaultdict
 from datetime import datetime, timedelta
 import ipaddress
+import json
+import os
 
 # Track unique ports accessed per IP over time window
 ip_activity = defaultdict(lambda: {
@@ -50,10 +52,72 @@ PORT_THRESHOLDS = {
 # Default threshold for ports not specified above
 DEFAULT_PORT_THRESHOLD = 10
 
+# State persistence file
+STATE_FILE = "firewall_state.json"
+
 def is_ip_blocked(ip):
     """Check if the IP is already blocked in iptables."""
     result = subprocess.run(["sudo", "iptables", "-L", "-n"], stdout=subprocess.PIPE, text=True)
     return ip in result.stdout
+
+def save_state():
+    """Save current state to file."""
+    try:
+        state = {
+            "ip_activity": {ip: {
+                "unique_ports": list(data["unique_ports"]),
+                "first_seen": data["first_seen"].isoformat() if data["first_seen"] else None,
+                "last_seen": data["last_seen"].isoformat() if data["last_seen"] else None,
+                "block_count": data["block_count"]
+            } for ip, data in ip_activity.items()},
+            "port_access_tracker": {str(port): {
+                "count": data["count"],
+                "timestamp": data["timestamp"].isoformat() if data["timestamp"] else None
+            } for port, data in port_access_tracker.items()},
+            "unblock_tasks": [{
+                "ip": task["ip"],
+                "unblock_time": task["unblock_time"].isoformat()
+            } for task in sniff_thread.unblock_tasks]
+        }
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"Error saving state: {e}")
+
+def load_state():
+    """Load state from file."""
+    global ip_activity, port_access_tracker
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+
+            # Restore ip_activity
+            for ip, data in state.get("ip_activity", {}).items():
+                ip_activity[ip] = {
+                    "unique_ports": set(data["unique_ports"]),
+                    "first_seen": datetime.fromisoformat(data["first_seen"]) if data["first_seen"] else None,
+                    "last_seen": datetime.fromisoformat(data["last_seen"]) if data["last_seen"] else None,
+                    "block_count": data["block_count"]
+                }
+
+            # Restore port_access_tracker
+            for port, data in state.get("port_access_tracker", {}).items():
+                port_access_tracker[int(port)] = {
+                    "count": data["count"],
+                    "timestamp": datetime.fromisoformat(data["timestamp"]) if data["timestamp"] else None
+                }
+
+            # Restore unblock_tasks
+            for task in state.get("unblock_tasks", []):
+                sniff_thread.unblock_tasks.append({
+                    "ip": task["ip"],
+                    "unblock_time": datetime.fromisoformat(task["unblock_time"])
+                })
+
+            print(f"State loaded: {len(ip_activity)} IPs, {len(port_access_tracker)} ports, {len(sniff_thread.unblock_tasks)} unblock tasks")
+    except Exception as e:
+        print(f"Error loading state: {e}")
 
 def block_ip(ip):
     """Block the given IP using iptables."""
@@ -64,16 +128,22 @@ def block_ip(ip):
     print(f"Blocking IP: {ip}")
     try:
         subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"], check=True)
+        save_state()
     except subprocess.CalledProcessError as e:
         print(f"Error blocking IP {ip}: {e}")
+        print("Firewall state saved for recovery")
+        save_state()
 
 def unblock_ip(ip):
     """Unblock the given IP."""
     print(f"Unblocking IP: {ip}")
     try:
         subprocess.run(["sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"], check=True)
+        save_state()
     except subprocess.CalledProcessError as e:
         print(f"Error unblocking IP {ip}: {e}")
+        print("Firewall state saved for recovery")
+        save_state()
 
 def is_trusted_ip(ip):
     """Check if IP is in trusted list (supports both individual IPs and CIDR subnets)."""
@@ -174,6 +244,7 @@ def unblock_expired_ips():
         if now >= task["unblock_time"]:
             unblock_ip(task["ip"])
             sniff_thread.unblock_tasks.remove(task)
+            save_state()  # Save state after removing unblock task
 
 class SniffThread:
     def __init__(self):
@@ -190,6 +261,7 @@ if __name__ == "__main__":
 
     # Start the sniffing in a separate thread
     sniff_thread = SniffThread()
+    load_state()  # Load persistent state on startup
     sniff_thread_thread = threading.Thread(target=sniff_thread.start_sniffing, daemon=True)
     sniff_thread_thread.start()
 
@@ -200,3 +272,4 @@ if __name__ == "__main__":
             time.sleep(5)
     except KeyboardInterrupt:
         print("\n🛑 Stopping firewall...")
+        save_state()  # Save state on shutdown

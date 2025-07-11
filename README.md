@@ -24,6 +24,12 @@ A comprehensive Python-based firewall with distributed attack prevention, subnet
 - **Root-Only Permissions**: Critical files can only be modified by root
 - **Tamper Detection**: Monitor stops immediately if files are compromised
 
+### ✅ **Persistent State Management**
+- **Automatic State Saving**: All tracking data saved after every iptables operation
+- **Graceful Recovery**: Resumes exactly where it left off after restarts or failures
+- **Failure Resilience**: State preserved even when iptables commands fail
+- **Zero Data Loss**: IP activity, port counters, and scheduled unblocks persist across reboots
+
 ### 🎯 **Problems Solved**
 1. **Port Scan Detection**: Identifies reconnaissance attempts across multiple ports
 2. **Distributed Attacks**: Protects against IP rotation and coordinated brute force
@@ -33,6 +39,7 @@ A comprehensive Python-based firewall with distributed attack prevention, subnet
 6. **Progressive Deterrence**: Escalating penalties discourage persistent attackers
 7. **Service-Aware Protection**: Critical ports get stricter protection than development ports
 8. **Business Continuity**: Legitimate users can access same ports repeatedly without blocks
+9. **State Persistence**: No data loss during system restarts, iptables failures, or crashes
 
 ## ⚙️ Configuration
 
@@ -127,8 +134,36 @@ sudo python3 monitor_firewall.py
 ├── firewall_control.sh      # Control script
 ├── secure_setup.sh          # Security hardening script
 ├── firewall.py.sha256       # Integrity hash (auto-generated)
+├── firewall_state.json      # Persistent state file (auto-generated)
 └── README.md               # This file
 ```
+
+## Persistent State Management
+
+The firewall automatically maintains persistent state across system restarts and iptables failures:
+
+### State Persistence Features
+- **Automatic Saving**: State saved after every iptables operation (block/unblock)
+- **Startup Recovery**: All tracking data restored when firewall starts
+- **Failure Resilience**: State preserved even when iptables commands fail
+- **Graceful Shutdown**: State saved when firewall is stopped with Ctrl+C
+
+### What Gets Persisted
+- **IP Activity Tracking**: Scan history, block counts, first/last seen timestamps
+- **Port Access Counters**: Attack attempt counts per port across all IPs
+- **Scheduled Unblock Tasks**: Pending IP unblock operations with exact timestamps
+- **Progressive Block History**: Repeat offender status for escalating penalties
+
+### State File Location
+- **File**: `firewall_state.json` (auto-generated in firewall directory)
+- **Format**: JSON with ISO timestamp formatting for cross-platform compatibility
+- **Permissions**: Readable by firewall process, automatically managed
+
+### Recovery Scenarios
+- **System Restart**: Firewall resumes with all previous tracking data intact
+- **iptables Failure**: State preserved with error notification for manual recovery
+- **Process Crash**: All data up to last operation is preserved and restored
+- **Manual Stop/Start**: Seamless continuation of all blocking and tracking operations
 
 ## Security Features
 
@@ -190,6 +225,19 @@ pip install scapy
 ls -la firewall.py monitor_firewall.py
 ```
 
+**State File Issues**
+```bash
+# Check if state file exists and is readable
+ls -la firewall_state.json
+
+# Reset state file if corrupted
+rm firewall_state.json
+# Firewall will create new state file on next startup
+
+# View current state file contents
+cat firewall_state.json | python3 -m json.tool
+```
+
 ## Advanced Configuration
 
 ### Custom Thresholds
@@ -231,6 +279,12 @@ TRUSTED_IPS = {
 2. **Secondary Check**: Functional blocking test once daily
 3. **Auto-Recovery**: Restarts firewall if either check fails
 4. **Security Validation**: Integrity check prevents tampering
+
+### State Persistence Architecture
+1. **Automatic Saving**: State saved after every iptables operation
+2. **Startup Recovery**: State loaded before packet processing begins
+3. **Failure Handling**: State preserved even during iptables command failures
+4. **Graceful Shutdown**: State saved on SIGINT (Ctrl+C) termination
 
 ## Complete Setup Checklist
 
