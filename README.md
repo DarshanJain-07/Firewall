@@ -12,10 +12,14 @@ A high-performance Python-based firewall replacement with hybrid fast/slow path 
 - **Hybrid Fast/Slow Path**: Sub-millisecond response for trusted IPs and blocked IPs
 - **Memory-Optimized Performance**: All tracking in RAM with configurable persistence intervals
 
-### ✅ **Attack Detection & Prevention**
+### ✅ **Advanced Scan Detection & Prevention**
+- **Multi-Scan Type Detection**: Detects SYN, FIN, NULL, XMAS, ACK, Maimon, RST, PSH, URG, and custom scans
+- **Stealth Scan Detection**: Identifies advanced reconnaissance techniques (FIN, NULL, XMAS scans)
+- **Suspicious Scan Blocking**: Blocks after 3 non-SYN scans from same IP (immediate threat response)
 - **Port Scan Detection**: Blocks IPs scanning multiple unique ports (threshold: 7 ports)
 - **Distributed Attack Prevention**: Port-specific thresholds to counter IP rotation attacks
 - **Progressive Blocking**: Escalating ban durations (10min → 2hrs → 1day → 1week)
+- **Stealth Mode Operation**: No responses to suspicious scans (doesn't reveal firewall presence)
 - **Queue-Based Analysis**: Complex threat analysis doesn't block packet capture
 
 ### ✅ **Enterprise Network Support**
@@ -57,6 +61,40 @@ A high-performance Python-based firewall replacement with hybrid fast/slow path 
 - **Retry Logic**: Automatic retry with exponential backoff for failed deliveries
 - **Production Ready**: Complete webhook handlers with database storage and alerting
 
+### 🔍 **Advanced TCP Scan Detection**
+
+The firewall now detects **all major TCP scan types** used by attackers for reconnaissance, providing comprehensive protection against both obvious and stealth scanning techniques.
+
+#### **Supported Scan Types**
+
+| Scan Type | TCP Flags | Suspicion Level | Description |
+|-----------|-----------|-----------------|-------------|
+| **SYN Scan** | `S` | Low | Normal connection attempts |
+| **FIN Scan** | `F` | High | Stealth scan using FIN packets |
+| **NULL Scan** | None | Very High | Highly suspicious scan with no flags |
+| **XMAS Scan** | `FPU` | Very High | "Christmas tree" scan with multiple flags |
+| **ACK Scan** | `A` | High | Firewall detection technique |
+| **Maimon Scan** | `FA` | High | FIN+ACK combination scan |
+| **RST Scan** | `R` | High | Reset packet scanning |
+| **PSH/URG Scans** | `P`/`U` | High | Single-flag stealth scans |
+| **Custom Scans** | Various | High | Unusual flag combinations |
+
+#### **Detection Thresholds**
+- **Suspicious Scan Blocking**: 3 non-SYN scans from same IP → Immediate block
+- **Port Scanning**: 7+ unique ports scanned → Progressive blocking
+- **Distributed Attacks**: Port-specific thresholds (e.g., 2 attempts on port 80)
+
+#### **Stealth Mode Operation**
+- **SYN Scans**: Normal SYN-ACK responses for legitimate traffic
+- **Suspicious Scans**: No response (stealth mode) - doesn't reveal firewall presence
+- **Comprehensive Logging**: All scan types tracked with detailed analytics
+
+#### **Real-time Analytics**
+- **Scan Type Tracking**: Per-IP statistics for all scan types used
+- **Periodic Reports**: Automated 5-minute summaries of threat activity
+- **Top Threats**: Most suspicious IPs and active scanners identified
+- **Webhook Integration**: Real-time alerts for all scan types detected
+
 ### 🔧 **Firewall Operation Modes**
 
 #### **Detection Only Mode** (Default)
@@ -90,19 +128,24 @@ tcp = [22, 80, 443]  # Minimal required ports
 ### 🎯 **Problems Solved**
 1. **Complete Firewall Replacement**: Drop-in replacement for traditional firewalls with port filtering
 2. **High-Performance Processing**: Hybrid architecture handles high traffic without packet loss
-3. **Port Scan Detection**: Identifies reconnaissance attempts across multiple ports
-4. **Distributed Attacks**: Protects against IP rotation and coordinated brute force
-5. **Corporate Networks**: Supports subnet whitelisting for business environments
-6. **System Reliability**: Auto-monitoring and restart capabilities
-7. **Script Tampering**: File integrity protection prevents unauthorized modifications
-8. **Progressive Deterrence**: Escalating penalties discourage persistent attackers
-9. **Service-Aware Protection**: Critical ports get stricter protection than development ports
-10. **Business Continuity**: Legitimate users can access same ports repeatedly without blocks
-11. **State Persistence**: Configurable persistence balancing performance vs data protection
-12. **Configuration Flexibility**: Easy mode switching and customization for different environments
-13. **Security Integration**: Real-time webhook notifications enable automated incident response
-14. **Multi-Organization Support**: Webhook system allows multiple organizations to receive alerts
-15. **SIEM/SOAR Integration**: Direct integration with security orchestration platforms
+3. **Advanced Scan Detection**: Identifies all major TCP scan types including stealth techniques
+4. **Stealth Reconnaissance**: Detects FIN, NULL, XMAS, ACK, and other evasion scans
+5. **Port Scan Detection**: Identifies reconnaissance attempts across multiple ports
+6. **Distributed Attacks**: Protects against IP rotation and coordinated brute force
+7. **Immediate Threat Response**: Blocks suspicious scanning behavior after just 3 attempts
+8. **Stealth Operation**: Doesn't reveal firewall presence to attackers using suspicious scans
+9. **Corporate Networks**: Supports subnet whitelisting for business environments
+10. **System Reliability**: Auto-monitoring and restart capabilities
+11. **Script Tampering**: File integrity protection prevents unauthorized modifications
+12. **Progressive Deterrence**: Escalating penalties discourage persistent attackers
+13. **Service-Aware Protection**: Critical ports get stricter protection than development ports
+14. **Business Continuity**: Legitimate users can access same ports repeatedly without blocks
+15. **State Persistence**: Configurable persistence balancing performance vs data protection
+16. **Configuration Flexibility**: Easy mode switching and customization for different environments
+17. **Security Integration**: Real-time webhook notifications enable automated incident response
+18. **Multi-Organization Support**: Webhook system allows multiple organizations to receive alerts
+19. **SIEM/SOAR Integration**: Direct integration with security orchestration platforms
+20. **Comprehensive Analytics**: Detailed scan type tracking and periodic threat reports
 
 ## 🚀 Quick Start
 
@@ -165,6 +208,25 @@ enabled = true
 ```bash
 # 2. Start firewall
 sudo python3 firewall.py
+```
+
+### Testing Scan Detection
+```bash
+# Test all scan types
+sudo python3 test_scan_detection.py 127.0.0.1
+
+# Test specific scan type
+sudo python3 test_scan_detection.py 127.0.0.1 --scan-type fin
+
+# Test with custom settings
+sudo python3 test_scan_detection.py 192.168.1.100 --port 8080 --delay 2.0
+
+# Real-world scan testing with nmap
+nmap -sS 127.0.0.1    # SYN scan (detected as SYN_SCAN)
+nmap -sF 127.0.0.1    # FIN scan (detected as FIN_SCAN)
+nmap -sN 127.0.0.1    # NULL scan (detected as NULL_SCAN)
+nmap -sX 127.0.0.1    # XMAS scan (detected as XMAS_SCAN)
+nmap -sA 127.0.0.1    # ACK scan (detected as ACK_SCAN)
 ```
 
 ### Webhook Integration Setup
@@ -337,7 +399,7 @@ sudo python3 monitor_firewall.py
 ## File Structure
 
 ```
-├── firewall.py                    # Main firewall logic with webhook integration
+├── firewall.py                    # Main firewall logic with advanced scan detection
 ├── monitor_firewall.py            # Health monitoring & auto-restart
 ├── firewall_control.sh            # Control script
 ├── secure_setup.sh                # Security hardening script
@@ -345,6 +407,9 @@ sudo python3 monitor_firewall.py
 ├── firewall_config.toml.example   # Example configuration
 ├── firewall.py.sha256             # Integrity hash (auto-generated)
 ├── firewall_state.toml            # Persistent state file (auto-generated)
+├── test_scan_detection.py         # Test suite for scan detection capabilities
+├── SCAN_DETECTION.md              # Comprehensive scan detection documentation
+├── SCAN_DETECTION_SUMMARY.md      # Implementation summary and usage guide
 ├── webhook_test_server.py         # Test server for webhook development
 ├── webhook_client.py              # Client utilities and integration examples
 ├── example_webhook_handler.py     # Production-ready webhook receiver
@@ -464,10 +529,11 @@ The firewall includes a comprehensive webhook system that enables real-time inte
 
 #### **Event Types**
 - `firewall_started` - System initialization
-- `connection_attempt` - Individual connection attempts (high volume)
+- `connection_attempt` - Individual connection attempts with scan type info (high volume)
+- `suspicious_scanning_detected` - Suspicious scan types detected (FIN, NULL, XMAS, etc.)
 - `ip_blocked` - IP address blocked for suspicious activity
 - `ip_unblocked` - IP address unblocked after timeout
-- `port_scanning_detected` - Port scanning behavior detected
+- `port_scanning_detected` - Port scanning behavior detected across multiple ports
 - `distributed_attack_detected` - Coordinated attacks on specific ports
 - `block_error`/`unblock_error` - System errors during operations
 
@@ -590,6 +656,55 @@ def handle_ip_blocked(event):
 
 For detailed webhook integration instructions, see `WEBHOOK_INTEGRATION.md`.
 
+## 🔍 Scan Detection in Action
+
+### Expected Log Output
+
+#### Normal SYN Scan
+```
+🔍 Analyzing 192.168.1.100 using SYN_SCAN on port 80 (flags: S)
+Sent SYN-ACK to 192.168.1.100 on port 80
+```
+
+#### Suspicious FIN Scan Detection
+```
+🔍 Analyzing 192.168.1.100 using FIN_SCAN on port 80 (flags: F)
+Detected FIN_SCAN from 192.168.1.100 on port 80 - not responding (stealth mode)
+🔍 Analyzing 192.168.1.100 using FIN_SCAN on port 443 (flags: F)
+Detected FIN_SCAN from 192.168.1.100 on port 443 - not responding (stealth mode)
+🔍 Analyzing 192.168.1.100 using FIN_SCAN on port 22 (flags: F)
+Detected FIN_SCAN from 192.168.1.100 on port 22 - not responding (stealth mode)
+🚫 IP 192.168.1.100 using suspicious scans (3 FIN_SCAN attempts), blocking for 0:10:00...
+```
+
+#### XMAS Scan Detection
+```
+🔍 Analyzing 192.168.1.100 using XMAS_SCAN on port 80 (flags: FPU)
+Detected XMAS_SCAN from 192.168.1.100 on port 80 - not responding (stealth mode)
+```
+
+#### Periodic Scan Report
+```
+============================================================
+🔍 FIREWALL SCAN DETECTION REPORT
+============================================================
+📊 Total IPs tracked: 5
+🚨 Suspicious IPs detected: 2
+
+📈 Scan Type Summary:
+  SYN_SCAN: 45 attempts
+  FIN_SCAN: 12 attempts
+  XMAS_SCAN: 8 attempts
+  NULL_SCAN: 5 attempts
+  ACK_SCAN: 3 attempts
+
+🚨 Top 5 Most Suspicious IPs:
+  1. 192.168.1.100 - 15 suspicious scans
+     Scan types: {'FIN_SCAN': 8, 'XMAS_SCAN': 4, 'NULL_SCAN': 3}
+     Unique ports: 12, Blocks: 1
+============================================================
+```
+
 ## 🔍 Attacker's View (Nmap Results)
 
 ### Detection Only Mode
@@ -621,7 +736,7 @@ For detailed webhook integration instructions, see `WEBHOOK_INTEGRATION.md`.
 # All other ports: filtered (silently dropped)
 ```
 
-**Key Security Benefit**: In firewall/corporate modes, attackers cannot determine which services might be running on blocked ports, significantly reducing reconnaissance value.
+**Key Security Benefit**: In firewall/corporate modes, attackers cannot determine which services might be running on blocked ports, significantly reducing reconnaissance value. Additionally, stealth scans receive no response, preventing attackers from determining if a firewall is present.
 
 ## High-Performance Design
 
@@ -770,10 +885,14 @@ The firewall uses a dual-path approach optimized for high traffic environments:
 4. **Progressive Blocking**: Escalating ban durations for repeat offenders
 
 ### Attack Detection Logic
-1. **Unique Port Scanning**: Tracks ports accessed per IP over time window
-2. **Distributed Attacks**: Monitors access attempts per port across all IPs
-3. **Progressive Blocking**: Increases ban duration for repeat offenders
-4. **Trusted Bypass**: Skips all checks for trusted IPs/subnets
+1. **Multi-Scan Type Detection**: Identifies SYN, FIN, NULL, XMAS, ACK, Maimon, RST, PSH, URG, and custom scans
+2. **Suspicious Scan Blocking**: Immediate blocking after 3 non-SYN scans from same IP
+3. **Unique Port Scanning**: Tracks ports accessed per IP over time window
+4. **Distributed Attacks**: Monitors access attempts per port across all IPs
+5. **Progressive Blocking**: Increases ban duration for repeat offenders
+6. **Stealth Mode Operation**: No responses to suspicious scans (doesn't reveal firewall presence)
+7. **Scan Type Analytics**: Comprehensive tracking and reporting of all scan types
+8. **Trusted Bypass**: Skips all checks for trusted IPs/subnets
 
 ### Performance Optimizations
 1. **Memory-Only Tracking**: All state kept in memory for maximum speed

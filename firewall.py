@@ -25,7 +25,8 @@ ip_activity = defaultdict(lambda: {
     "unique_ports": set(),
     "first_seen": None,
     "last_seen": None,
-    "block_count": 0  # Track how many times this IP has been blocked
+    "block_count": 0,  # Track how many times this IP has been blocked
+    "scan_types": defaultdict(int)  # Track different scan types used by this IP
 })
 
 # Track access attempts per port (for distributed attack protection)
@@ -107,6 +108,10 @@ state_save_intervals = {
 }
 current_save_interval = 120  # Default
 last_state_save = datetime.now()
+
+# Periodic scan report configuration
+scan_report_interval = 300  # 5 minutes default
+last_scan_report = datetime.now()
 
 def parse_duration(duration_str):
     """Parse duration string like '10m', '2h', '1d' into timedelta."""
@@ -232,7 +237,8 @@ def save_state():
                     "unique_ports": list(data["unique_ports"]),
                     "first_seen": data["first_seen"].isoformat() if data["first_seen"] else "",
                     "last_seen": data["last_seen"].isoformat() if data["last_seen"] else "",
-                    "block_count": data["block_count"]
+                    "block_count": data["block_count"],
+                    "scan_types": dict(data["scan_types"]) if "scan_types" in data else {}
                 }
 
         # Save port access tracker
@@ -272,7 +278,8 @@ def load_state():
                     "unique_ports": set(data["unique_ports"]),
                     "first_seen": datetime.fromisoformat(data["first_seen"]) if data["first_seen"] else None,
                     "last_seen": datetime.fromisoformat(data["last_seen"]) if data["last_seen"] else None,
-                    "block_count": data["block_count"]
+                    "block_count": data["block_count"],
+                    "scan_types": defaultdict(int, data.get("scan_types", {}))
                 }
 
             # Restore port_access_tracker
@@ -397,6 +404,130 @@ def is_trusted_ip(ip):
         return False
     except ValueError:
         return False
+
+def detect_scan_type(tcp_flags):
+    """
+    Detect the type of TCP scan based on flag combinations.
+
+    Args:
+        tcp_flags: TCP flags from the packet (e.g., "S", "F", "FA", etc.)
+
+    Returns:
+        tuple: (scan_type, is_suspicious)
+    """
+    # Convert flags to a set for easier checking
+    flags_set = set(tcp_flags) if tcp_flags else set()
+
+    # Define scan patterns - order matters for proper detection
+    if tcp_flags == "S":
+        return ("SYN_SCAN", False)  # Normal connection attempt, not inherently suspicious
+    elif tcp_flags == "SA":
+        return ("SYN_ACK", False)   # Normal SYN-ACK response, not suspicious
+    elif tcp_flags == "F":
+        return ("FIN_SCAN", True)   # FIN scan - stealth scan technique
+    elif tcp_flags == "":
+        return ("NULL_SCAN", True)  # NULL scan - no flags set, highly suspicious
+    elif tcp_flags == "A":
+        return ("ACK_SCAN", True)   # ACK scan - firewall detection technique
+    elif "P" in flags_set and len(flags_set) == 1:
+        return ("PSH_SCAN", True)   # PSH-only scan
+    elif "U" in flags_set and len(flags_set) == 1:
+        return ("URG_SCAN", True)   # URG-only scan
+    elif "F" in flags_set and "P" in flags_set and "U" in flags_set and len(flags_set) == 3:
+        return ("XMAS_SCAN", True)  # XMAS scan - exactly FIN, PSH, URG flags (Christmas tree)
+    elif "F" in flags_set and "A" in flags_set and len(flags_set) == 2:
+        return ("MAIMON_SCAN", True)  # Maimon scan - FIN + ACK
+    elif "R" in flags_set:
+        return ("RST_SCAN", True)   # RST scan - reset packets
+    else:
+        # Check for other suspicious combinations
+        if len(flags_set) > 3:
+            return ("CUSTOM_SCAN", True)  # Unusual flag combinations
+        elif len(flags_set) > 1 and "S" not in flags_set:
+            return ("STEALTH_SCAN", True)  # Multiple flags without SYN
+        else:
+            return ("UNKNOWN_SCAN", True)  # Unknown pattern, treat as suspicious
+
+def get_scan_statistics():
+    """Get comprehensive scan statistics for analysis."""
+    stats = {
+        "total_ips_tracked": len(ip_activity),
+        "scan_type_summary": defaultdict(int),
+        "suspicious_ips": [],
+        "top_scanners": [],
+        "scan_patterns": {}
+    }
+
+    # Analyze each IP's activity
+    for ip, activity in ip_activity.items():
+        scan_types = activity.get("scan_types", {})
+
+        # Count scan types globally
+        for scan_type, count in scan_types.items():
+            stats["scan_type_summary"][scan_type] += count
+
+        # Identify suspicious IPs (using non-SYN scans)
+        suspicious_scans = sum(count for scan, count in scan_types.items() if scan != "SYN_SCAN")
+        if suspicious_scans > 0:
+            stats["suspicious_ips"].append({
+                "ip": ip,
+                "suspicious_scan_count": suspicious_scans,
+                "scan_types": dict(scan_types),
+                "unique_ports": len(activity["unique_ports"]),
+                "block_count": activity["block_count"],
+                "first_seen": activity["first_seen"].isoformat() if activity["first_seen"] else None,
+                "last_seen": activity["last_seen"].isoformat() if activity["last_seen"] else None
+            })
+
+        # Track top scanners by total activity
+        total_scans = sum(scan_types.values())
+        if total_scans > 0:
+            stats["top_scanners"].append({
+                "ip": ip,
+                "total_scans": total_scans,
+                "unique_ports": len(activity["unique_ports"]),
+                "scan_types": dict(scan_types)
+            })
+
+    # Sort suspicious IPs by suspicious scan count
+    stats["suspicious_ips"].sort(key=lambda x: x["suspicious_scan_count"], reverse=True)
+
+    # Sort top scanners by total scans
+    stats["top_scanners"].sort(key=lambda x: x["total_scans"], reverse=True)
+    stats["top_scanners"] = stats["top_scanners"][:10]  # Top 10 only
+
+    return stats
+
+def print_scan_report():
+    """Print a detailed scan report to console."""
+    stats = get_scan_statistics()
+
+    print("\n" + "="*60)
+    print("🔍 FIREWALL SCAN DETECTION REPORT")
+    print("="*60)
+
+    print(f"📊 Total IPs tracked: {stats['total_ips_tracked']}")
+    print(f"🚨 Suspicious IPs detected: {len(stats['suspicious_ips'])}")
+
+    print("\n📈 Scan Type Summary:")
+    for scan_type, count in sorted(stats['scan_type_summary'].items(), key=lambda x: x[1], reverse=True):
+        print(f"  {scan_type}: {count} attempts")
+
+    if stats['suspicious_ips']:
+        print(f"\n🚨 Top 5 Most Suspicious IPs:")
+        for i, ip_data in enumerate(stats['suspicious_ips'][:5], 1):
+            print(f"  {i}. {ip_data['ip']} - {ip_data['suspicious_scan_count']} suspicious scans")
+            print(f"     Scan types: {ip_data['scan_types']}")
+            print(f"     Unique ports: {ip_data['unique_ports']}, Blocks: {ip_data['block_count']}")
+
+    if stats['top_scanners']:
+        print(f"\n🔥 Top 5 Most Active Scanners:")
+        for i, scanner in enumerate(stats['top_scanners'][:5], 1):
+            print(f"  {i}. {scanner['ip']} - {scanner['total_scans']} total scans")
+            print(f"     Unique ports: {scanner['unique_ports']}")
+            print(f"     Scan types: {scanner['scan_types']}")
+
+    print("="*60)
 
 def create_webhook_signature(payload: str, secret: str) -> str:
     """Create HMAC-SHA256 signature for webhook payload."""
@@ -549,26 +680,35 @@ async def process_webhook_queue():
 
 def handle_packet(packet):
     """Fast path packet handler - immediate decisions only."""
-    if TCP in packet and packet[TCP].flags == "S":  # SYN flag detected
+    if TCP in packet:  # Any TCP packet
         src_ip = packet[IP].src
         port = packet[TCP].dport
         src_port = packet[TCP].sport
+        tcp_flags = str(packet[TCP].flags)
+
+        # Detect scan type
+        scan_type, is_suspicious = detect_scan_type(tcp_flags)
 
         # FAST PATH: Immediate decisions
         # 1. Check if IP is trusted (fastest check)
         if is_trusted_ip(src_ip):
+            # For trusted IPs, still log suspicious scans but allow them
+            if is_suspicious:
+                print(f"⚠️ Trusted IP {src_ip} using {scan_type} on port {port} - allowing but logging")
+
             # For trusted IPs, check port filtering in firewall modes
             if FIREWALL_MODE in ["firewall", "corporate"] and port not in ALLOWED_PORTS:
                 print(f"🚫 Trusted IP {src_ip} accessing blocked port {port} - dropping")
                 return  # Drop even trusted IPs on blocked ports
 
-            print(f"✅ Trusted IP {src_ip} accessing port {port} - allowing")
-            # Send SYN-ACK immediately for trusted IPs on allowed ports
-            syn_ack = (
-                IP(dst=src_ip, src=packet[IP].dst) /
-                TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
-            )
-            send(syn_ack, verbose=0)
+            # Only send SYN-ACK for normal SYN packets from trusted IPs
+            if scan_type == "SYN_SCAN":
+                print(f"✅ Trusted IP {src_ip} accessing port {port} - allowing")
+                syn_ack = (
+                    IP(dst=src_ip, src=packet[IP].dst) /
+                    TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
+                )
+                send(syn_ack, verbose=0)
             return
 
         # 2. Check if IP is already blocked (fast cache lookup)
@@ -578,7 +718,7 @@ def handle_packet(packet):
 
         # 3. Firewall port filtering (critical security check)
         if FIREWALL_MODE in ["firewall", "corporate"] and port not in ALLOWED_PORTS:
-            print(f"🚫 Port {port} not allowed, dropping packet from {src_ip}")
+            print(f"🚫 Port {port} not allowed, dropping {scan_type} from {src_ip}")
             return  # Drop packet silently - firewall behavior
 
         # SLOW PATH: Queue for complex analysis (only for allowed ports)
@@ -588,10 +728,13 @@ def handle_packet(packet):
                 "port": port,
                 "src_port": src_port,
                 "packet": packet,
+                "scan_type": scan_type,
+                "is_suspicious": is_suspicious,
+                "tcp_flags": tcp_flags,
                 "timestamp": datetime.now()
             })
         except queue.Full:
-            print(f"⚠️ Slow path queue full, dropping packet from {src_ip}")
+            print(f"⚠️ Slow path queue full, dropping {scan_type} from {src_ip}")
 
 def process_slow_path():
     """Slow path processor - complex analysis in separate thread."""
@@ -603,15 +746,21 @@ def process_slow_path():
             port = packet_data["port"]
             src_port = packet_data["src_port"]
             packet = packet_data["packet"]
+            scan_type = packet_data["scan_type"]
+            is_suspicious = packet_data["is_suspicious"]
+            tcp_flags = packet_data["tcp_flags"]
             current_time = packet_data["timestamp"]
 
-            print(f"🔍 Analyzing {src_ip} accessing port {port}")
+            print(f"🔍 Analyzing {src_ip} using {scan_type} on port {port} (flags: {tcp_flags})")
 
             # Queue webhook event for connection attempt
             queue_webhook_event("connection_attempt", {
                 "ip": src_ip,
                 "port": port,
                 "src_port": src_port,
+                "scan_type": scan_type,
+                "tcp_flags": tcp_flags,
+                "is_suspicious": is_suspicious,
                 "timestamp": current_time.isoformat()
             })
 
@@ -624,14 +773,19 @@ def process_slow_path():
                     "unique_ports": {port},
                     "first_seen": current_time,
                     "last_seen": current_time,
-                    "block_count": activity["block_count"]  # Preserve block count for progressive blocking
+                    "block_count": activity["block_count"],  # Preserve block count for progressive blocking
+                    "scan_types": defaultdict(int)  # Reset scan type tracking
                 }
+                activity = ip_activity[src_ip]  # Update reference
             else:
                 # Update activity
                 if not activity["first_seen"]:
                     activity["first_seen"] = current_time
                 activity["unique_ports"].add(port)
                 activity["last_seen"] = current_time
+
+            # Track scan types used by this IP
+            activity["scan_types"][scan_type] += 1
 
             # Track port access attempts (distributed attack protection)
             if port_access_tracker[port]["timestamp"] and current_time - port_access_tracker[port]["timestamp"] > ACTIVITY_WINDOW:
@@ -668,6 +822,49 @@ def process_slow_path():
                 slow_path_queue.task_done()
                 continue
 
+            # Check for immediate blocking on suspicious scan types
+            suspicious_scan_threshold = 3  # Block after 3 suspicious scans
+            total_suspicious_scans = sum(count for scan, count in activity["scan_types"].items()
+                                       if scan != "SYN_SCAN")
+
+            if is_suspicious and total_suspicious_scans >= suspicious_scan_threshold:
+                # Progressive blocking for suspicious scanning
+                block_count = activity["block_count"]
+                duration_index = min(block_count, len(BLOCK_DURATIONS) - 1)
+                block_duration = BLOCK_DURATIONS[duration_index]
+
+                # Increment block count for this IP
+                activity["block_count"] += 1
+
+                # Queue webhook event for suspicious scan detection
+                queue_webhook_event("suspicious_scanning_detected", {
+                    "ip": src_ip,
+                    "scan_type": scan_type,
+                    "total_suspicious_scans": total_suspicious_scans,
+                    "threshold": suspicious_scan_threshold,
+                    "scan_types_used": dict(activity["scan_types"]),
+                    "offense_count": activity["block_count"],
+                    "block_duration_seconds": int(block_duration.total_seconds()),
+                    "attack_type": "suspicious_scanning"
+                })
+
+                print(f"🚫 IP {src_ip} using suspicious scans ({total_suspicious_scans} {scan_type} attempts), blocking for {block_duration}...")
+
+                block_ip(src_ip, "suspicious_scanning", {
+                    "scan_type": scan_type,
+                    "total_suspicious_scans": total_suspicious_scans,
+                    "scan_types_used": dict(activity["scan_types"]),
+                    "offense_count": activity["block_count"],
+                    "block_duration_seconds": int(block_duration.total_seconds())
+                })
+
+                # Schedule unblock
+                unblock_time = datetime.now() + block_duration
+                print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
+                slow_path_queue.task_done()
+                continue
+
             # Block if scanning multiple unique ports
             unique_port_count = len(activity["unique_ports"])
             if unique_port_count > UNIQUE_PORTS_THRESHOLD:
@@ -685,6 +882,8 @@ def process_slow_path():
                     "unique_ports_scanned": unique_port_count,
                     "threshold": UNIQUE_PORTS_THRESHOLD,
                     "ports": list(activity["unique_ports"]),
+                    "scan_types_used": dict(activity["scan_types"]),
+                    "current_scan_type": scan_type,
                     "offense_count": activity["block_count"],
                     "block_duration_seconds": int(block_duration.total_seconds()),
                     "attack_type": "port_scanning"
@@ -695,6 +894,8 @@ def process_slow_path():
                 block_ip(src_ip, "port_scanning", {
                     "unique_ports_scanned": unique_port_count,
                     "ports": list(activity["unique_ports"]),
+                    "scan_types_used": dict(activity["scan_types"]),
+                    "current_scan_type": scan_type,
                     "offense_count": activity["block_count"],
                     "block_duration_seconds": int(block_duration.total_seconds())
                 })
@@ -706,13 +907,18 @@ def process_slow_path():
                 slow_path_queue.task_done()
                 continue
 
-            # If not blocked, send SYN-ACK
-            syn_ack = (
-                IP(dst=src_ip, src=packet[IP].dst) /
-                TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
-            )
-            send(syn_ack, verbose=0)
-            print(f"Sent SYN-ACK to {src_ip} on port {port}")
+            # If not blocked, respond appropriately based on scan type
+            if scan_type == "SYN_SCAN":
+                # Send SYN-ACK only for legitimate SYN scans
+                syn_ack = (
+                    IP(dst=src_ip, src=packet[IP].dst) /
+                    TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
+                )
+                send(syn_ack, verbose=0)
+                print(f"Sent SYN-ACK to {src_ip} on port {port}")
+            else:
+                # For other scan types, just log but don't respond (stealth mode)
+                print(f"Detected {scan_type} from {src_ip} on port {port} - not responding (stealth mode)")
 
             slow_path_queue.task_done()
 
@@ -737,6 +943,14 @@ def periodic_state_save():
         save_state()
         last_state_save = now
         print(f"💾 Periodic state save completed")
+
+def periodic_scan_report():
+    """Generate periodic scan reports."""
+    global last_scan_report
+    now = datetime.now()
+    if (now - last_scan_report).total_seconds() >= scan_report_interval:
+        print_scan_report()
+        last_scan_report = now
 
 class SniffThread:
     def __init__(self):
@@ -813,7 +1027,9 @@ if __name__ == "__main__":
         while True:
             unblock_expired_ips()
             periodic_state_save()  # Check if it's time for periodic save
+            periodic_scan_report()  # Check if it's time for scan report
             time.sleep(sleep_interval)
     except KeyboardInterrupt:
         print("\n🛑 Stopping firewall...")
+        print_scan_report()  # Final scan report on shutdown
         save_state()  # Final save on shutdown
