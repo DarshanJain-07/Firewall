@@ -30,6 +30,12 @@ A comprehensive Python-based firewall with distributed attack prevention, subnet
 - **Failure Resilience**: State preserved even when iptables commands fail
 - **Zero Data Loss**: IP activity, port counters, and scheduled unblocks persist across reboots
 
+### ✅ **Flexible Configuration System**
+- **Multiple Security Modes**: Choose from aggressive, standard, lenient, or custom modes
+- **TOML Configuration**: Human-readable config files with comments and examples
+- **Environment-Specific**: Easy customization for different deployment scenarios
+- **Trusted Networks**: Support for IP addresses and CIDR subnets that bypass all checks
+
 ### 🎯 **Problems Solved**
 1. **Port Scan Detection**: Identifies reconnaissance attempts across multiple ports
 2. **Distributed Attacks**: Protects against IP rotation and coordinated brute force
@@ -40,20 +46,76 @@ A comprehensive Python-based firewall with distributed attack prevention, subnet
 7. **Service-Aware Protection**: Critical ports get stricter protection than development ports
 8. **Business Continuity**: Legitimate users can access same ports repeatedly without blocks
 9. **State Persistence**: No data loss during system restarts, iptables failures, or crashes
+10. **Configuration Flexibility**: Easy mode switching and customization for different environments
 
 ## ⚙️ Configuration
 
-### Port-Specific Thresholds
-```python
-PORT_THRESHOLDS = {
-    80: 2,      # Web server - stricter
-    443: 2,     # HTTPS - stricter
-    22: 3,      # SSH - moderate
-    8000: 10,   # Development server - lenient
-    8080: 10,   # Alternative HTTP - lenient
-    3306: 5,    # MySQL - moderate
-    5432: 5,    # PostgreSQL - moderate
-}
+The firewall uses a TOML configuration file for easy customization. Copy the example file and modify as needed:
+
+```bash
+cp firewall_config.toml.example firewall_config.toml
+# Edit firewall_config.toml with your preferred settings
+```
+
+### Security Modes
+
+Choose from predefined security modes or create custom settings:
+
+#### **Aggressive Mode** - High Security
+- Blocks after scanning **3 ports**
+- **1-hour** activity tracking window
+- **Immediate blocking** on sensitive ports (80, 443)
+- Escalating penalties: `5m → 1h → 12h → 3d`
+
+#### **Standard Mode** - Balanced (Default)
+- Blocks after scanning **7 ports**
+- **2-hour** activity tracking window
+- **Moderate thresholds** for most ports
+- Escalating penalties: `10m → 2h → 1d → 7d`
+
+#### **Lenient Mode** - High Traffic/Development
+- Blocks after scanning **15 ports**
+- **24-hour** activity tracking window
+- **High tolerance** for enterprise environments
+- Escalating penalties: `30m → 4h → 2d → 14d`
+
+#### **Custom Mode** - Full Control
+- Define your own thresholds and settings
+- Perfect for specific deployment requirements
+
+### Configuration Examples
+
+#### Small Office (10-50 users)
+```toml
+[firewall]
+mode = "standard"
+
+[trusted]
+ips = ["192.168.1.1"]
+networks = ["192.168.1.0/24"]
+```
+
+#### Enterprise (1000+ employees)
+```toml
+[firewall]
+mode = "lenient"
+
+[custom.port_thresholds]
+80 = 150    # High web traffic
+443 = 150   # High HTTPS traffic
+
+[trusted]
+networks = ["10.0.0.0/8", "172.16.0.0/12"]
+```
+
+#### Development Environment
+```toml
+[firewall]
+mode = "lenient"
+
+[custom]
+unique_ports_threshold = 20
+activity_window_hours = 48
 ```
 
 ### Trusted Networks
@@ -91,8 +153,10 @@ This script will:
 
 ### 3. Dependencies
 ```bash
-pip install scapy
+pip install scapy tomli tomli-w
 ```
+
+**Note**: `tomli` and `tomli-w` are for TOML state persistence. Python 3.11+ has built-in TOML reading support.
 
 ## Usage
 
@@ -133,9 +197,52 @@ sudo python3 monitor_firewall.py
 ├── monitor_firewall.py      # Health monitoring & auto-restart
 ├── firewall_control.sh      # Control script
 ├── secure_setup.sh          # Security hardening script
+├── firewall_config.toml     # Configuration file (customize this)
+├── firewall_config.toml.example  # Example configuration
 ├── firewall.py.sha256       # Integrity hash (auto-generated)
-├── firewall_state.json      # Persistent state file (auto-generated)
+├── firewall_state.toml      # Persistent state file (auto-generated)
 └── README.md               # This file
+```
+
+## Configuration System
+
+The firewall supports flexible TOML-based configuration with multiple security modes:
+
+### Quick Setup
+1. **Copy example config**: `cp firewall_config.toml.example firewall_config.toml`
+2. **Choose security mode**: Edit `mode = "standard"` to your preference
+3. **Add trusted networks**: Update the `[trusted]` section with your IPs/subnets
+4. **Start firewall**: The configuration is loaded automatically
+
+### Security Mode Comparison
+
+| Setting | Aggressive | Standard | Lenient |
+|---------|------------|----------|---------|
+| **Port Scan Threshold** | 3 ports | 7 ports | 15 ports |
+| **Activity Window** | 1 hour | 2 hours | 24 hours |
+| **Web Server (80/443)** | 1 attempt | 2 attempts | 100 attempts |
+| **SSH (22)** | 2 attempts | 3 attempts | 20 attempts |
+| **First Block Duration** | 5 minutes | 10 minutes | 30 minutes |
+
+### Configuration File Structure
+```toml
+[firewall]
+mode = "standard"  # aggressive, standard, lenient, custom
+
+[trusted]
+ips = ["127.0.0.1", "192.168.1.1"]
+networks = ["192.168.0.0/16", "10.0.0.0/8"]
+
+[custom]  # Only used when mode = "custom"
+unique_ports_threshold = 7
+default_port_threshold = 10
+activity_window_hours = 2
+block_durations = ["10m", "2h", "1d", "7d"]
+
+[custom.port_thresholds]
+80 = 2    # Web server
+443 = 2   # HTTPS
+22 = 3    # SSH
 ```
 
 ## Persistent State Management
@@ -155,8 +262,8 @@ The firewall automatically maintains persistent state across system restarts and
 - **Progressive Block History**: Repeat offender status for escalating penalties
 
 ### State File Location
-- **File**: `firewall_state.json` (auto-generated in firewall directory)
-- **Format**: JSON with ISO timestamp formatting for cross-platform compatibility
+- **File**: `firewall_state.toml` (auto-generated in firewall directory)
+- **Format**: TOML with ISO timestamp formatting for human readability
 - **Permissions**: Readable by firewall process, automatically managed
 
 ### Recovery Scenarios
@@ -218,8 +325,8 @@ with open('firewall.py.sha256', 'w') as f:
 
 **Monitor Not Starting**
 ```bash
-# Check if scapy is installed
-pip install scapy
+# Check if dependencies are installed
+pip install scapy tomli tomli-w
 
 # Verify file permissions
 ls -la firewall.py monitor_firewall.py
@@ -228,14 +335,14 @@ ls -la firewall.py monitor_firewall.py
 **State File Issues**
 ```bash
 # Check if state file exists and is readable
-ls -la firewall_state.json
+ls -la firewall_state.toml
 
 # Reset state file if corrupted
-rm firewall_state.json
+rm firewall_state.toml
 # Firewall will create new state file on next startup
 
-# View current state file contents
-cat firewall_state.json | python3 -m json.tool
+# View current state file contents (human-readable TOML)
+cat firewall_state.toml
 ```
 
 ## Advanced Configuration
@@ -291,13 +398,17 @@ TRUSTED_IPS = {
 ### Initial Setup
 ```bash
 # 1. Install dependencies
-pip install scapy
+pip install scapy tomli tomli-w
 
-# 2. Make scripts executable
+# 2. Create configuration file
+cp firewall_config.toml.example firewall_config.toml
+# Edit firewall_config.toml with your settings
+
+# 3. Make scripts executable
 chmod +x firewall_control.sh
 chmod +x secure_setup.sh
 
-# 3. Run security hardening
+# 4. Run security hardening
 sudo ./secure_setup.sh
 ```
 

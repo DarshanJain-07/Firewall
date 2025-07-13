@@ -3,8 +3,12 @@ import subprocess
 from collections import defaultdict
 from datetime import datetime, timedelta
 import ipaddress
-import json
 import os
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    import tomli as tomllib  # Fallback for older Python
+import tomli_w
 
 # Track unique ports accessed per IP over time window
 ip_activity = defaultdict(lambda: {
@@ -52,8 +56,85 @@ PORT_THRESHOLDS = {
 # Default threshold for ports not specified above
 DEFAULT_PORT_THRESHOLD = 10
 
-# State persistence file
-STATE_FILE = "firewall_state.json"
+# Configuration and state files
+CONFIG_FILE = "firewall_config.toml"
+STATE_FILE = "firewall_state.toml"
+
+def parse_duration(duration_str):
+    """Parse duration string like '10m', '2h', '1d' into timedelta."""
+    if not duration_str:
+        return timedelta(minutes=10)
+
+    unit = duration_str[-1].lower()
+    try:
+        value = int(duration_str[:-1])
+        if unit == 'm':
+            return timedelta(minutes=value)
+        elif unit == 'h':
+            return timedelta(hours=value)
+        elif unit == 'd':
+            return timedelta(days=value)
+        else:
+            return timedelta(minutes=10)  # Default fallback
+    except ValueError:
+        return timedelta(minutes=10)  # Default fallback
+
+def load_config():
+    """Load configuration from TOML file."""
+    global UNIQUE_PORTS_THRESHOLD, ACTIVITY_WINDOW, BLOCK_DURATIONS
+    global PORT_THRESHOLDS, DEFAULT_PORT_THRESHOLD, TRUSTED_IPS, STATE_FILE
+
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'rb') as f:
+                config = tomllib.load(f)
+
+            # Get selected mode
+            mode = config.get("firewall", {}).get("mode", "standard")
+            print(f"Loading firewall configuration: {mode} mode")
+
+            # Load mode-specific settings
+            if mode in ["aggressive", "standard", "lenient"]:
+                mode_config = config.get("modes", {}).get(mode, {})
+            elif mode == "custom":
+                mode_config = config.get("custom", {})
+            else:
+                print(f"Unknown mode '{mode}', using standard mode")
+                mode_config = config.get("modes", {}).get("standard", {})
+
+            # Update global settings
+            UNIQUE_PORTS_THRESHOLD = mode_config.get("unique_ports_threshold", 7)
+            DEFAULT_PORT_THRESHOLD = mode_config.get("default_port_threshold", 10)
+
+            # Parse activity window
+            activity_hours = mode_config.get("activity_window_hours", 2)
+            ACTIVITY_WINDOW = timedelta(hours=activity_hours)
+
+            # Parse block durations
+            duration_strings = mode_config.get("block_durations", ["10m", "2h", "1d", "7d"])
+            BLOCK_DURATIONS = [parse_duration(d) for d in duration_strings]
+
+            # Update port thresholds
+            port_thresholds = mode_config.get("port_thresholds", {})
+            if port_thresholds:
+                PORT_THRESHOLDS.update(port_thresholds)
+
+            # Update trusted IPs and networks
+            trusted = config.get("trusted", {})
+            trusted_ips = set(trusted.get("ips", []))
+            trusted_networks = set(trusted.get("networks", []))
+            TRUSTED_IPS = trusted_ips.union(trusted_networks)
+
+            # Update state file location
+            STATE_FILE = config.get("firewall", {}).get("state_file", "firewall_state.toml")
+
+            print(f"Configuration loaded: {UNIQUE_PORTS_THRESHOLD} port threshold, {len(TRUSTED_IPS)} trusted entries")
+
+        else:
+            print(f"No config file found at {CONFIG_FILE}, using defaults")
+
+    except Exception as e:
+        print(f"Error loading config: {e}, using defaults")
 
 def is_ip_blocked(ip):
     """Check if the IP is already blocked in iptables."""
@@ -61,36 +142,51 @@ def is_ip_blocked(ip):
     return ip in result.stdout
 
 def save_state():
-    """Save current state to file."""
+    """Save current state to TOML file."""
     try:
-        state = {
-            "ip_activity": {ip: {
-                "unique_ports": list(data["unique_ports"]),
-                "first_seen": data["first_seen"].isoformat() if data["first_seen"] else None,
-                "last_seen": data["last_seen"].isoformat() if data["last_seen"] else None,
-                "block_count": data["block_count"]
-            } for ip, data in ip_activity.items()},
-            "port_access_tracker": {str(port): {
-                "count": data["count"],
-                "timestamp": data["timestamp"].isoformat() if data["timestamp"] else None
-            } for port, data in port_access_tracker.items()},
-            "unblock_tasks": [{
-                "ip": task["ip"],
-                "unblock_time": task["unblock_time"].isoformat()
-            } for task in sniff_thread.unblock_tasks]
-        }
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f)
+        state = {}
+
+        # Save IP activity data
+        if ip_activity:
+            state["ip_activity"] = {}
+            for ip, data in ip_activity.items():
+                state["ip_activity"][ip] = {
+                    "unique_ports": list(data["unique_ports"]),
+                    "first_seen": data["first_seen"].isoformat() if data["first_seen"] else "",
+                    "last_seen": data["last_seen"].isoformat() if data["last_seen"] else "",
+                    "block_count": data["block_count"]
+                }
+
+        # Save port access tracker
+        if port_access_tracker:
+            state["port_access_tracker"] = {}
+            for port, data in port_access_tracker.items():
+                state["port_access_tracker"][str(port)] = {
+                    "count": data["count"],
+                    "timestamp": data["timestamp"].isoformat() if data["timestamp"] else ""
+                }
+
+        # Save unblock tasks
+        if sniff_thread.unblock_tasks:
+            state["unblock_tasks"] = []
+            for task in sniff_thread.unblock_tasks:
+                state["unblock_tasks"].append({
+                    "ip": task["ip"],
+                    "unblock_time": task["unblock_time"].isoformat()
+                })
+
+        with open(STATE_FILE, 'wb') as f:
+            tomli_w.dump(state, f)
     except Exception as e:
         print(f"Error saving state: {e}")
 
 def load_state():
-    """Load state from file."""
+    """Load state from TOML file."""
     global ip_activity, port_access_tracker
     try:
         if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                state = json.load(f)
+            with open(STATE_FILE, 'rb') as f:
+                state = tomllib.load(f)
 
             # Restore ip_activity
             for ip, data in state.get("ip_activity", {}).items():
@@ -259,17 +355,30 @@ if __name__ == "__main__":
     import threading
     import time
 
+    # Load configuration first
+    load_config()
+
     # Start the sniffing in a separate thread
     sniff_thread = SniffThread()
     load_state()  # Load persistent state on startup
     sniff_thread_thread = threading.Thread(target=sniff_thread.start_sniffing, daemon=True)
     sniff_thread_thread.start()
 
+    # Get sleep interval from config
+    sleep_interval = 5  # Default
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'rb') as f:
+                config = tomllib.load(f)
+            sleep_interval = config.get("firewall", {}).get("sleep_interval", 5)
+    except:
+        pass
+
     # Monitor unblock tasks in the main thread
     try:
         while True:
             unblock_expired_ips()
-            time.sleep(5)
+            time.sleep(sleep_interval)
     except KeyboardInterrupt:
         print("\n🛑 Stopping firewall...")
         save_state()  # Save state on shutdown

@@ -1,0 +1,64 @@
+# Firewall Configuration Example
+# Copy this file to firewall_config.toml and customize as needed
+
+[firewall]
+# Choose your security mode:
+# "aggressive" - High security, strict blocking
+# "standard"   - Balanced security (recommended)
+# "lenient"    - Relaxed for high-traffic environments
+# "custom"     - Use custom settings below
+mode = "standard"
+
+# ============================================================================
+# TRUSTED NETWORKS - CUSTOMIZE THESE FOR YOUR ENVIRONMENT
+# ============================================================================
+
+[trusted]
+# Add your trusted IP addresses (never blocked)
+ips = [
+    "127.0.0.1",        # Localhost
+    "192.168.1.1",      # Your router/gateway
+    # "10.0.0.100",     # Your admin workstation
+    # "203.0.113.50",   # Your office public IP
+]
+
+# Add your trusted networks (CIDR notation)
+networks = [
+    "192.168.0.0/16",   # Home/office network
+    "10.0.0.0/8",       # Corporate VPN
+    # "172.16.0.0/12",  # Additional private range
+]
+
+# ============================================================================
+# CUSTOM SETTINGS (only used when mode = "custom")
+# ============================================================================
+
+[custom]
+# Uncomment and modify these when using mode = "custom"
+# unique_ports_threshold = 7        # Ports scanned before blocking
+# default_port_threshold = 10       # Default attempts per port
+# activity_window_hours = 2         # Tracking time window
+# block_durations = ["10m", "2h", "1d", "7d"]  # Escalating penalties
+
+[custom.port_thresholds]
+# Uncomment and modify port-specific thresholds
+# 80 = 2      # Web server
+# 443 = 2     # HTTPS
+# 22 = 3      # SSH
+# 8000 = 10   # Development server
+
+# ============================================================================
+# QUICK SETUP EXAMPLES
+# ============================================================================
+
+# For small office (10-50 users):
+# mode = "standard"
+
+# For enterprise (1000+ employees):
+# mode = "lenient"
+
+# For development environment:
+# mode = "lenient"
+
+# For high security environment:
+# mode = "aggressive"

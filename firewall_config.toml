@@ -1,0 +1,143 @@
+# Firewall Configuration File
+# Choose your security mode or customize individual settings
+
+[firewall]
+# Security mode: "aggressive", "standard", "lenient", or "custom"
+# - aggressive: High security, low tolerance for scanning
+# - standard: Balanced security for most environments  
+# - lenient: Relaxed for development/high-traffic environments
+# - custom: Use the custom settings below
+mode = "standard"
+
+# State file location (where tracking data is saved)
+state_file = "firewall_state.toml"
+
+# How often to check for expired IP blocks (seconds)
+sleep_interval = 5
+
+# ============================================================================
+# PREDEFINED SECURITY MODES
+# ============================================================================
+
+[modes.aggressive]
+# High security mode - strict thresholds for maximum protection
+unique_ports_threshold = 3        # Block after scanning 3 ports
+default_port_threshold = 5        # Default attempts before blocking
+activity_window_hours = 1         # Track activity over 1 hour
+block_durations = ["5m", "1h", "12h", "3d"]  # Escalating penalties
+
+[modes.aggressive.port_thresholds]
+# Strict thresholds for sensitive ports
+80 = 1      # Web server - immediate block
+443 = 1     # HTTPS - immediate block  
+22 = 2      # SSH - very strict
+8000 = 3    # Development - strict
+8080 = 3    # Alt HTTP - strict
+3306 = 2    # MySQL - strict
+5432 = 2    # PostgreSQL - strict
+
+[modes.standard]
+# Balanced security mode - good for most environments
+unique_ports_threshold = 7        # Block after scanning 7 ports
+default_port_threshold = 10       # Default attempts before blocking
+activity_window_hours = 2         # Track activity over 2 hours
+block_durations = ["10m", "2h", "1d", "7d"]  # Progressive penalties
+
+[modes.standard.port_thresholds]
+# Balanced thresholds
+80 = 2      # Web server - stricter
+443 = 2     # HTTPS - stricter
+22 = 3      # SSH - moderate
+8000 = 10   # Development - lenient
+8080 = 10   # Alt HTTP - lenient
+3306 = 5    # MySQL - moderate
+5432 = 5    # PostgreSQL - moderate
+
+[modes.lenient]
+# Relaxed security mode - for high-traffic or development environments
+unique_ports_threshold = 15       # Block after scanning 15 ports
+default_port_threshold = 50       # High tolerance
+activity_window_hours = 24        # Track activity over 24 hours
+block_durations = ["30m", "4h", "2d", "14d"]  # Longer escalation
+
+[modes.lenient.port_thresholds]
+# Relaxed thresholds for high-traffic environments
+80 = 100    # Web server - very lenient (enterprise level)
+443 = 100   # HTTPS - very lenient
+22 = 20     # SSH - moderate
+8000 = 200  # Development - very lenient
+8080 = 200  # Alt HTTP - very lenient
+3306 = 50   # MySQL - lenient
+5432 = 50   # PostgreSQL - lenient
+
+# ============================================================================
+# CUSTOM SETTINGS (only used when mode = "custom")
+# ============================================================================
+
+[custom]
+# Custom thresholds - modify these when using mode = "custom"
+unique_ports_threshold = 7        # Ports scanned before blocking IP
+default_port_threshold = 10       # Default attempts per port
+activity_window_hours = 2         # Time window for tracking
+
+# Progressive blocking durations (first offense, second, third, fourth+)
+block_durations = ["10m", "2h", "1d", "7d"]
+
+[custom.port_thresholds]
+# Custom port-specific thresholds
+# Format: port_number = max_attempts_before_block
+80 = 2      # Web server
+443 = 2     # HTTPS
+22 = 3      # SSH
+8000 = 10   # Development server
+8080 = 10   # Alternative HTTP
+3306 = 5    # MySQL
+5432 = 5    # PostgreSQL
+# Add more ports as needed: port_number = threshold
+
+# ============================================================================
+# TRUSTED NETWORKS (never blocked)
+# ============================================================================
+
+[trusted]
+# Individual IP addresses that will never be blocked
+ips = [
+    "127.0.0.1",        # Localhost
+    "192.168.1.1",      # Router/Gateway
+    # Add your trusted IPs here
+]
+
+# Network subnets that will never be blocked (CIDR notation)
+networks = [
+    "192.168.0.0/16",   # Private network range
+    "10.0.0.0/8",       # Corporate network range
+    "172.16.0.0/12",    # Private network range
+    # Add your trusted networks here
+]
+
+# ============================================================================
+# EXAMPLES FOR DIFFERENT ENVIRONMENTS
+# ============================================================================
+
+# Example 1: Small Office (10-50 users)
+# mode = "standard"
+# [custom.port_thresholds]
+# 80 = 20
+# 443 = 20
+
+# Example 2: Enterprise (1000+ employees)
+# mode = "lenient" 
+# [custom.port_thresholds]
+# 80 = 150
+# 443 = 150
+
+# Example 3: Development Environment
+# mode = "lenient"
+# [custom]
+# unique_ports_threshold = 20
+# activity_window_hours = 48
+
+# Example 4: High Security Environment
+# mode = "aggressive"
+# [custom.port_thresholds]
+# 22 = 1    # SSH - immediate block on second attempt
