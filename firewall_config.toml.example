@@ -3,11 +3,29 @@
 
 [firewall]
 # Choose your security mode:
-# "aggressive" - High security, strict blocking
-# "standard"   - Balanced security (recommended)
-# "lenient"    - Relaxed for high-traffic environments
+# "aggressive" - High security, strict blocking (30s state saves)
+# "standard"   - Balanced security (2min state saves) [recommended]
+# "lenient"    - Relaxed for high-traffic environments (5min state saves)
 # "custom"     - Use custom settings below
 mode = "standard"
+
+# State file location (where tracking data is saved)
+state_file = "firewall_state.toml"
+
+# How often to check for expired IP blocks (seconds)
+sleep_interval = 5
+
+# Performance: State save intervals are automatic by mode:
+# - aggressive: 30 seconds (minimal data loss risk)
+# - standard: 120 seconds (balanced performance)
+# - lenient: 300 seconds (maximum performance)
+# For custom mode, override with: state_save_interval = 60
+
+# Firewall operation mode:
+# - "detection_only": Monitor attacks, allow all ports (default)
+# - "firewall": Block unauthorized ports, full firewall replacement
+# - "corporate": Strict port filtering for corporate environments
+firewall_mode = "detection_only"
 
 # ============================================================================
 # TRUSTED NETWORKS - CUSTOMIZE THESE FOR YOUR ENVIRONMENT
@@ -40,6 +58,9 @@ networks = [
 # activity_window_hours = 2         # Tracking time window
 # block_durations = ["10m", "2h", "1d", "7d"]  # Escalating penalties
 
+# Custom state save interval (seconds) - overrides mode defaults
+# state_save_interval = 60          # Save every 60 seconds
+
 [custom.port_thresholds]
 # Uncomment and modify port-specific thresholds
 # 80 = 2      # Web server
@@ -54,7 +75,7 @@ networks = [
 # For small office (10-50 users):
 # mode = "standard"
 
-# For enterprise (1000+ employees):
+# For enterprise (1000+ employees, high traffic):
 # mode = "lenient"
 
 # For development environment:
@@ -62,3 +83,38 @@ networks = [
 
 # For high security environment:
 # mode = "aggressive"
+
+# For maximum performance (high traffic servers):
+# mode = "custom"
+# state_save_interval = 300  # 5 minutes
+
+# ============================================================================
+# FIREWALL PORT FILTERING (when firewall_mode = "firewall" or "corporate")
+# ============================================================================
+
+[allowed_ports]
+# TCP ports that are allowed through the firewall
+# Only these ports will accept connections in firewall/corporate mode
+tcp = [
+    22,    # SSH
+    80,    # HTTP
+    443,   # HTTPS
+    # 3306,  # MySQL (uncomment if needed)
+    # 5432,  # PostgreSQL (uncomment if needed)
+    # 8000,  # Development server (uncomment if needed)
+]
+
+# Example configurations:
+
+# Web server only:
+# tcp = [22, 80, 443]
+
+# Database server:
+# tcp = [22, 3306, 5432]
+
+# Development environment:
+# tcp = [22, 80, 443, 8000, 8080, 3000]
+
+# Corporate environment (minimal ports):
+# tcp = [22, 80, 443]
+# firewall_mode = "corporate"

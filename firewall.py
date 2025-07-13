@@ -4,6 +4,16 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import ipaddress
 import os
+import queue
+import threading
+import json
+import requests
+import hashlib
+import hmac
+import time
+import asyncio
+import aiohttp
+from typing import Dict, List, Optional, Any
 try:
     import tomllib  # Python 3.11+
 except ImportError:
@@ -56,9 +66,47 @@ PORT_THRESHOLDS = {
 # Default threshold for ports not specified above
 DEFAULT_PORT_THRESHOLD = 10
 
+# Port filtering for firewall replacement functionality
+ALLOWED_PORTS = set()  # Ports that are allowed through firewall
+FIREWALL_MODE = "detection_only"  # "detection_only", "firewall", "corporate"
+
 # Configuration and state files
 CONFIG_FILE = "firewall_config.toml"
 STATE_FILE = "firewall_state.toml"
+
+# Webhook configuration
+WEBHOOK_CONFIG = {
+    "enabled": False,
+    "endpoints": [],
+    "retry_attempts": 3,
+    "retry_delay": 5,  # seconds
+    "timeout": 10,  # seconds
+    "batch_size": 10,  # events to batch together
+    "batch_timeout": 30,  # seconds to wait before sending partial batch
+    "rate_limit": 100,  # max requests per minute
+    "signature_header": "X-Firewall-Signature",
+    "timestamp_header": "X-Firewall-Timestamp"
+}
+
+# Webhook event queue and batching
+webhook_queue = queue.Queue(maxsize=1000)
+webhook_batch = []
+last_batch_time = datetime.now()
+webhook_rate_limiter = {"requests": 0, "window_start": datetime.now()}
+
+# Fast path caches for high performance
+blocked_ips_cache = set()  # Cache of currently blocked IPs
+slow_path_queue = queue.Queue(maxsize=1000)  # Queue for complex analysis
+
+# Periodic state saving configuration
+state_save_intervals = {
+    "aggressive": 30,   # 30 seconds - minimal data loss risk
+    "standard": 120,    # 2 minutes - balanced
+    "lenient": 300,     # 5 minutes - performance focused
+    "custom": 120       # Default for custom mode
+}
+current_save_interval = 120  # Default
+last_state_save = datetime.now()
 
 def parse_duration(duration_str):
     """Parse duration string like '10m', '2h', '1d' into timedelta."""
@@ -83,6 +131,7 @@ def load_config():
     """Load configuration from TOML file."""
     global UNIQUE_PORTS_THRESHOLD, ACTIVITY_WINDOW, BLOCK_DURATIONS
     global PORT_THRESHOLDS, DEFAULT_PORT_THRESHOLD, TRUSTED_IPS, STATE_FILE
+    global current_save_interval, ALLOWED_PORTS, FIREWALL_MODE, WEBHOOK_CONFIG
 
     try:
         if os.path.exists(CONFIG_FILE):
@@ -93,11 +142,20 @@ def load_config():
             mode = config.get("firewall", {}).get("mode", "standard")
             print(f"Loading firewall configuration: {mode} mode")
 
+            # Set state save interval based on mode
+            current_save_interval = state_save_intervals.get(mode, 120)
+            print(f"State save interval: {current_save_interval} seconds")
+
             # Load mode-specific settings
             if mode in ["aggressive", "standard", "lenient"]:
                 mode_config = config.get("modes", {}).get(mode, {})
             elif mode == "custom":
                 mode_config = config.get("custom", {})
+                # Allow custom save interval override
+                custom_save_interval = config.get("firewall", {}).get("state_save_interval")
+                if custom_save_interval:
+                    current_save_interval = custom_save_interval
+                    print(f"Custom state save interval: {current_save_interval} seconds")
             else:
                 print(f"Unknown mode '{mode}', using standard mode")
                 mode_config = config.get("modes", {}).get("standard", {})
@@ -127,6 +185,26 @@ def load_config():
 
             # Update state file location
             STATE_FILE = config.get("firewall", {}).get("state_file", "firewall_state.toml")
+
+            # Load firewall mode and allowed ports
+            FIREWALL_MODE = config.get("firewall", {}).get("firewall_mode", "detection_only")
+
+            # Load allowed ports based on mode
+            if FIREWALL_MODE in ["firewall", "corporate"]:
+                allowed_ports_config = config.get("allowed_ports", {})
+                tcp_ports = allowed_ports_config.get("tcp", [])
+                ALLOWED_PORTS.clear()
+                ALLOWED_PORTS.update(tcp_ports)
+                print(f"Firewall mode: {FIREWALL_MODE}, allowed ports: {sorted(ALLOWED_PORTS) if ALLOWED_PORTS else 'ALL'}")
+            else:
+                ALLOWED_PORTS.clear()  # Detection only mode - all ports allowed
+                print(f"Detection only mode: monitoring all ports")
+
+            # Load webhook configuration
+            webhook_config = config.get("webhooks", {})
+            if webhook_config:
+                WEBHOOK_CONFIG.update(webhook_config)
+                print(f"Webhook configuration loaded: {len(WEBHOOK_CONFIG.get('endpoints', []))} endpoints")
 
             print(f"Configuration loaded: {UNIQUE_PORTS_THRESHOLD} port threshold, {len(TRUSTED_IPS)} trusted entries")
 
@@ -167,7 +245,7 @@ def save_state():
                 }
 
         # Save unblock tasks
-        if sniff_thread.unblock_tasks:
+        if hasattr(sniff_thread, 'unblock_tasks') and sniff_thread.unblock_tasks:
             state["unblock_tasks"] = []
             for task in sniff_thread.unblock_tasks:
                 state["unblock_tasks"].append({
@@ -205,40 +283,104 @@ def load_state():
                 }
 
             # Restore unblock_tasks
-            for task in state.get("unblock_tasks", []):
-                sniff_thread.unblock_tasks.append({
-                    "ip": task["ip"],
-                    "unblock_time": datetime.fromisoformat(task["unblock_time"])
-                })
+            if hasattr(sniff_thread, 'unblock_tasks'):
+                for task in state.get("unblock_tasks", []):
+                    sniff_thread.unblock_tasks.append({
+                        "ip": task["ip"],
+                        "unblock_time": datetime.fromisoformat(task["unblock_time"])
+                    })
+
+            # Rebuild blocked IPs cache from iptables
+            rebuild_blocked_cache()
 
             print(f"State loaded: {len(ip_activity)} IPs, {len(port_access_tracker)} ports, {len(sniff_thread.unblock_tasks)} unblock tasks")
     except Exception as e:
         print(f"Error loading state: {e}")
 
-def block_ip(ip):
+def rebuild_blocked_cache():
+    """Rebuild the blocked IPs cache from current iptables rules."""
+    try:
+        result = subprocess.run(["sudo", "iptables", "-L", "-n"], stdout=subprocess.PIPE, text=True)
+        blocked_ips_cache.clear()
+        for line in result.stdout.split('\n'):
+            if 'DROP' in line and '-s' in line:
+                # Extract IP from iptables rule
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if part == '-s' and i + 1 < len(parts):
+                        ip = parts[i + 1].split('/')[0]  # Remove CIDR if present
+                        blocked_ips_cache.add(ip)
+        print(f"Rebuilt blocked IPs cache: {len(blocked_ips_cache)} IPs")
+    except Exception as e:
+        print(f"Error rebuilding blocked cache: {e}")
+
+def block_ip(ip, reason="port_scanning", additional_data=None):
     """Block the given IP using iptables."""
-    if is_ip_blocked(ip):
+    if ip in blocked_ips_cache:
         print(f"IP {ip} is already blocked. Skipping...")
         return
 
     print(f"Blocking IP: {ip}")
     try:
         subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"], check=True)
-        save_state()
+        blocked_ips_cache.add(ip)  # Update cache
+
+        # Queue webhook event
+        webhook_data = {
+            "ip": ip,
+            "reason": reason,
+            "action": "blocked",
+            "method": "iptables",
+            "block_count": ip_activity[ip]["block_count"] if ip in ip_activity else 0
+        }
+        if additional_data:
+            webhook_data.update(additional_data)
+
+        queue_webhook_event("ip_blocked", webhook_data)
+
+        # No immediate save_state() - handled by periodic saves
     except subprocess.CalledProcessError as e:
         print(f"Error blocking IP {ip}: {e}")
-        print("Firewall state saved for recovery")
+
+        # Queue webhook event for error
+        queue_webhook_event("block_error", {
+            "ip": ip,
+            "reason": reason,
+            "error": str(e),
+            "action": "block_failed"
+        })
+
+        # Force immediate save on error for recovery
         save_state()
 
-def unblock_ip(ip):
+def unblock_ip(ip, reason="timeout_expired"):
     """Unblock the given IP."""
     print(f"Unblocking IP: {ip}")
     try:
         subprocess.run(["sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"], check=True)
-        save_state()
+        blocked_ips_cache.discard(ip)  # Update cache
+
+        # Queue webhook event
+        queue_webhook_event("ip_unblocked", {
+            "ip": ip,
+            "reason": reason,
+            "action": "unblocked",
+            "method": "iptables"
+        })
+
+        # No immediate save_state() - handled by periodic saves
     except subprocess.CalledProcessError as e:
         print(f"Error unblocking IP {ip}: {e}")
-        print("Firewall state saved for recovery")
+
+        # Queue webhook event for error
+        queue_webhook_event("unblock_error", {
+            "ip": ip,
+            "reason": reason,
+            "error": str(e),
+            "action": "unblock_failed"
+        })
+
+        # Force immediate save on error for recovery
         save_state()
 
 def is_trusted_ip(ip):
@@ -256,20 +398,224 @@ def is_trusted_ip(ip):
     except ValueError:
         return False
 
+def create_webhook_signature(payload: str, secret: str) -> str:
+    """Create HMAC-SHA256 signature for webhook payload."""
+    return hmac.new(
+        secret.encode('utf-8'),
+        payload.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+def create_webhook_event(event_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a standardized webhook event."""
+    return {
+        "id": hashlib.md5(f"{event_type}_{time.time()}_{data}".encode()).hexdigest(),
+        "timestamp": datetime.now().isoformat(),
+        "event_type": event_type,
+        "version": "1.0",
+        "source": "firewall",
+        "data": data
+    }
+
+def queue_webhook_event(event_type: str, data: Dict[str, Any]):
+    """Queue a webhook event for delivery."""
+    if not WEBHOOK_CONFIG.get("enabled", False):
+        return
+
+    event = create_webhook_event(event_type, data)
+    try:
+        webhook_queue.put_nowait(event)
+    except queue.Full:
+        print(f"⚠️ Webhook queue full, dropping event: {event_type}")
+
+def check_rate_limit() -> bool:
+    """Check if we're within rate limits."""
+    now = datetime.now()
+    window_duration = timedelta(minutes=1)
+
+    # Reset window if needed
+    if now - webhook_rate_limiter["window_start"] > window_duration:
+        webhook_rate_limiter["requests"] = 0
+        webhook_rate_limiter["window_start"] = now
+
+    # Check if we're under the limit
+    if webhook_rate_limiter["requests"] >= WEBHOOK_CONFIG.get("rate_limit", 100):
+        return False
+
+    webhook_rate_limiter["requests"] += 1
+    return True
+
+async def send_webhook_batch(session: aiohttp.ClientSession, endpoint: Dict[str, str], events: List[Dict[str, Any]]):
+    """Send a batch of webhook events to an endpoint."""
+    if not check_rate_limit():
+        print(f"⚠️ Rate limit exceeded, skipping webhook to {endpoint['url']}")
+        return False
+
+    payload = {
+        "events": events,
+        "batch_size": len(events),
+        "timestamp": datetime.now().isoformat()
+    }
+
+    payload_json = json.dumps(payload, sort_keys=True)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Firewall-Webhook/1.0"
+    }
+
+    # Add signature if secret is provided
+    if endpoint.get("secret"):
+        signature = create_webhook_signature(payload_json, endpoint["secret"])
+        headers[WEBHOOK_CONFIG.get("signature_header", "X-Firewall-Signature")] = f"sha256={signature}"
+
+    # Add timestamp header
+    headers[WEBHOOK_CONFIG.get("timestamp_header", "X-Firewall-Timestamp")] = str(int(time.time()))
+
+    # Add custom headers
+    if endpoint.get("headers"):
+        headers.update(endpoint["headers"])
+
+    retry_attempts = WEBHOOK_CONFIG.get("retry_attempts", 3)
+    retry_delay = WEBHOOK_CONFIG.get("retry_delay", 5)
+
+    for attempt in range(retry_attempts):
+        try:
+            timeout = aiohttp.ClientTimeout(total=WEBHOOK_CONFIG.get("timeout", 10))
+            async with session.post(
+                endpoint["url"],
+                data=payload_json,
+                headers=headers,
+                timeout=timeout
+            ) as response:
+                if response.status == 200:
+                    print(f"✅ Webhook delivered to {endpoint['url']} ({len(events)} events)")
+                    return True
+                else:
+                    print(f"⚠️ Webhook failed to {endpoint['url']}: HTTP {response.status}")
+
+        except Exception as e:
+            print(f"⚠️ Webhook error to {endpoint['url']} (attempt {attempt + 1}): {e}")
+
+        if attempt < retry_attempts - 1:
+            await asyncio.sleep(retry_delay)
+
+    print(f"❌ Webhook failed to {endpoint['url']} after {retry_attempts} attempts")
+    return False
+
+async def process_webhook_queue():
+    """Process webhook events from the queue."""
+    global webhook_batch, last_batch_time
+
+    if not WEBHOOK_CONFIG.get("enabled", False) or not WEBHOOK_CONFIG.get("endpoints"):
+        return
+
+    batch_size = WEBHOOK_CONFIG.get("batch_size", 10)
+    batch_timeout = WEBHOOK_CONFIG.get("batch_timeout", 30)
+
+    # Collect events from queue
+    events_to_process = []
+    try:
+        while len(events_to_process) < batch_size:
+            event = webhook_queue.get_nowait()
+            events_to_process.append(event)
+    except queue.Empty:
+        pass
+
+    # Add to current batch
+    webhook_batch.extend(events_to_process)
+
+    # Check if we should send the batch
+    now = datetime.now()
+    should_send = (
+        len(webhook_batch) >= batch_size or
+        (webhook_batch and (now - last_batch_time).total_seconds() >= batch_timeout)
+    )
+
+    if should_send and webhook_batch:
+        events_to_send = webhook_batch.copy()
+        webhook_batch.clear()
+        last_batch_time = now
+
+        # Send to all endpoints
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for endpoint in WEBHOOK_CONFIG.get("endpoints", []):
+                if endpoint.get("url"):
+                    task = send_webhook_batch(session, endpoint, events_to_send)
+                    tasks.append(task)
+
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
 def handle_packet(packet):
+    """Fast path packet handler - immediate decisions only."""
     if TCP in packet and packet[TCP].flags == "S":  # SYN flag detected
         src_ip = packet[IP].src
         port = packet[TCP].dport
         src_port = packet[TCP].sport
 
-        # Check if IP is in trusted list or subnet - skip all processing if it is
+        # FAST PATH: Immediate decisions
+        # 1. Check if IP is trusted (fastest check)
         if is_trusted_ip(src_ip):
+            # For trusted IPs, check port filtering in firewall modes
+            if FIREWALL_MODE in ["firewall", "corporate"] and port not in ALLOWED_PORTS:
+                print(f"🚫 Trusted IP {src_ip} accessing blocked port {port} - dropping")
+                return  # Drop even trusted IPs on blocked ports
+
             print(f"✅ Trusted IP {src_ip} accessing port {port} - allowing")
-        else:
-            print(f"🔍 Access detected on port {port} from {src_ip}")
+            # Send SYN-ACK immediately for trusted IPs on allowed ports
+            syn_ack = (
+                IP(dst=src_ip, src=packet[IP].dst) /
+                TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
+            )
+            send(syn_ack, verbose=0)
+            return
+
+        # 2. Check if IP is already blocked (fast cache lookup)
+        if src_ip in blocked_ips_cache:
+            print(f"� Already blocked IP {src_ip} trying port {port} - dropping")
+            return  # Drop packet, no response
+
+        # 3. Firewall port filtering (critical security check)
+        if FIREWALL_MODE in ["firewall", "corporate"] and port not in ALLOWED_PORTS:
+            print(f"🚫 Port {port} not allowed, dropping packet from {src_ip}")
+            return  # Drop packet silently - firewall behavior
+
+        # SLOW PATH: Queue for complex analysis (only for allowed ports)
+        try:
+            slow_path_queue.put_nowait({
+                "src_ip": src_ip,
+                "port": port,
+                "src_port": src_port,
+                "packet": packet,
+                "timestamp": datetime.now()
+            })
+        except queue.Full:
+            print(f"⚠️ Slow path queue full, dropping packet from {src_ip}")
+
+def process_slow_path():
+    """Slow path processor - complex analysis in separate thread."""
+    while True:
+        try:
+            # Get packet from queue (blocks until available)
+            packet_data = slow_path_queue.get()
+            src_ip = packet_data["src_ip"]
+            port = packet_data["port"]
+            src_port = packet_data["src_port"]
+            packet = packet_data["packet"]
+            current_time = packet_data["timestamp"]
+
+            print(f"🔍 Analyzing {src_ip} accessing port {port}")
+
+            # Queue webhook event for connection attempt
+            queue_webhook_event("connection_attempt", {
+                "ip": src_ip,
+                "port": port,
+                "src_port": src_port,
+                "timestamp": current_time.isoformat()
+            })
 
             # Track unique port access
-            current_time = datetime.now()
             activity = ip_activity[src_ip]
 
             # Reset activity if outside time window
@@ -299,12 +645,28 @@ def handle_packet(packet):
             port_threshold = PORT_THRESHOLDS.get(port, DEFAULT_PORT_THRESHOLD)
             if port_access_tracker[port]["count"] > port_threshold:
                 print(f"🚫 Port {port} under distributed attack ({port_access_tracker[port]['count']} > {port_threshold} attempts), blocking IP {src_ip}...")
-                block_ip(src_ip)
+
+                # Queue webhook event for distributed attack detection
+                queue_webhook_event("distributed_attack_detected", {
+                    "ip": src_ip,
+                    "port": port,
+                    "attempts": port_access_tracker[port]["count"],
+                    "threshold": port_threshold,
+                    "attack_type": "distributed_port_attack"
+                })
+
+                block_ip(src_ip, "distributed_attack", {
+                    "port": port,
+                    "attempts": port_access_tracker[port]["count"],
+                    "threshold": port_threshold
+                })
+
                 # Schedule unblock (use first offense duration for port-based blocks)
                 unblock_time = datetime.now() + BLOCK_DURATIONS[0]
                 print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
-                return
+                slow_path_queue.task_done()
+                continue
 
             # Block if scanning multiple unique ports
             unique_port_count = len(activity["unique_ports"])
@@ -317,21 +679,46 @@ def handle_packet(packet):
                 # Increment block count for this IP
                 activity["block_count"] += 1
 
+                # Queue webhook event for port scanning detection
+                queue_webhook_event("port_scanning_detected", {
+                    "ip": src_ip,
+                    "unique_ports_scanned": unique_port_count,
+                    "threshold": UNIQUE_PORTS_THRESHOLD,
+                    "ports": list(activity["unique_ports"]),
+                    "offense_count": activity["block_count"],
+                    "block_duration_seconds": int(block_duration.total_seconds()),
+                    "attack_type": "port_scanning"
+                })
+
                 print(f"🚫 IP {src_ip} scanned {unique_port_count} unique ports (offense #{activity['block_count']}), blocking for {block_duration}...")
-                block_ip(src_ip)
+
+                block_ip(src_ip, "port_scanning", {
+                    "unique_ports_scanned": unique_port_count,
+                    "ports": list(activity["unique_ports"]),
+                    "offense_count": activity["block_count"],
+                    "block_duration_seconds": int(block_duration.total_seconds())
+                })
+
                 # Schedule unblock
                 unblock_time = datetime.now() + block_duration
                 print(f"IP {src_ip} will be unblocked at {unblock_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 sniff_thread.unblock_tasks.append({"ip": src_ip, "unblock_time": unblock_time})
-                return
+                slow_path_queue.task_done()
+                continue
 
-        # Respond with SYN-ACK (for both trusted and non-blocked IPs)
-        syn_ack = (
-            IP(dst=src_ip, src=packet[IP].dst) /
-            TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
-        )
-        send(syn_ack, verbose=0)
-        print(f"Sent SYN-ACK to {src_ip} on port {port}")
+            # If not blocked, send SYN-ACK
+            syn_ack = (
+                IP(dst=src_ip, src=packet[IP].dst) /
+                TCP(sport=port, dport=src_port, flags="SA", seq=100, ack=packet[TCP].seq + 1)
+            )
+            send(syn_ack, verbose=0)
+            print(f"Sent SYN-ACK to {src_ip} on port {port}")
+
+            slow_path_queue.task_done()
+
+        except Exception as e:
+            print(f"Error in slow path processing: {e}")
+            slow_path_queue.task_done()
 
 def unblock_expired_ips():
     """Unblock IPs whose block duration has expired."""
@@ -340,7 +727,16 @@ def unblock_expired_ips():
         if now >= task["unblock_time"]:
             unblock_ip(task["ip"])
             sniff_thread.unblock_tasks.remove(task)
-            save_state()  # Save state after removing unblock task
+            # No immediate save_state() - handled by periodic saves
+
+def periodic_state_save():
+    """Save state periodically based on configured interval."""
+    global last_state_save
+    now = datetime.now()
+    if (now - last_state_save).total_seconds() >= current_save_interval:
+        save_state()
+        last_state_save = now
+        print(f"💾 Periodic state save completed")
 
 class SniffThread:
     def __init__(self):
@@ -364,6 +760,32 @@ if __name__ == "__main__":
     sniff_thread_thread = threading.Thread(target=sniff_thread.start_sniffing, daemon=True)
     sniff_thread_thread.start()
 
+    # Start slow path processor thread
+    slow_path_thread = threading.Thread(target=process_slow_path, daemon=True)
+    slow_path_thread.start()
+
+    # Start webhook processor thread
+    def webhook_processor():
+        """Run webhook processing in a separate thread."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def webhook_loop():
+            while True:
+                try:
+                    await process_webhook_queue()
+                    await asyncio.sleep(1)  # Check every second
+                except Exception as e:
+                    print(f"Error in webhook processor: {e}")
+                    await asyncio.sleep(5)  # Wait longer on error
+
+        loop.run_until_complete(webhook_loop())
+
+    if WEBHOOK_CONFIG.get("enabled", False):
+        webhook_thread = threading.Thread(target=webhook_processor, daemon=True)
+        webhook_thread.start()
+        print("🔗 Webhook processor started")
+
     # Get sleep interval from config
     sleep_interval = 5  # Default
     try:
@@ -374,11 +796,24 @@ if __name__ == "__main__":
     except:
         pass
 
-    # Monitor unblock tasks in the main thread
+    print("🚀 Hybrid firewall started: Fast path for immediate decisions, slow path for complex analysis")
+
+    # Queue startup webhook event
+    queue_webhook_event("firewall_started", {
+        "mode": FIREWALL_MODE,
+        "unique_ports_threshold": UNIQUE_PORTS_THRESHOLD,
+        "default_port_threshold": DEFAULT_PORT_THRESHOLD,
+        "trusted_ips_count": len(TRUSTED_IPS),
+        "webhook_enabled": WEBHOOK_CONFIG.get("enabled", False),
+        "webhook_endpoints_count": len(WEBHOOK_CONFIG.get("endpoints", []))
+    })
+
+    # Monitor unblock tasks and periodic saves in the main thread
     try:
         while True:
             unblock_expired_ips()
+            periodic_state_save()  # Check if it's time for periodic save
             time.sleep(sleep_interval)
     except KeyboardInterrupt:
         print("\n🛑 Stopping firewall...")
-        save_state()  # Save state on shutdown
+        save_state()  # Final save on shutdown

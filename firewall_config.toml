@@ -15,6 +15,19 @@ state_file = "firewall_state.toml"
 # How often to check for expired IP blocks (seconds)
 sleep_interval = 5
 
+# State save intervals by mode (automatic):
+# - aggressive: 30 seconds (minimal data loss risk)
+# - standard: 120 seconds (balanced)
+# - lenient: 300 seconds (performance focused)
+# For custom mode, you can override with:
+# state_save_interval = 60
+
+# Firewall operation mode:
+# - "detection_only": Monitor and detect attacks, allow all ports (default)
+# - "firewall": Block unauthorized ports, full firewall replacement
+# - "corporate": Strict port filtering for corporate environments
+firewall_mode = "detection_only"
+
 # ============================================================================
 # PREDEFINED SECURITY MODES
 # ============================================================================
@@ -135,7 +148,182 @@ networks = [
 # mode = "lenient"
 # [custom]
 # unique_ports_threshold = 20
-# activity_window_hours = 48
+
+# ============================================================================
+# FIREWALL PORT FILTERING (when firewall_mode = "firewall" or "corporate")
+# ============================================================================
+
+[allowed_ports]
+# TCP ports that are allowed through the firewall
+# Only these ports will accept connections in firewall/corporate mode
+tcp = [
+    22,    # SSH
+    80,    # HTTP
+    443,   # HTTPS
+    # 3306,  # MySQL (uncomment if needed)
+    # 5432,  # PostgreSQL (uncomment if needed)
+    # 8000,  # Development server (uncomment if needed)
+]
+
+# UDP ports (future enhancement)
+# udp = [53, 123]  # DNS, NTP
+
+# ============================================================================
+# WEBHOOK CONFIGURATION
+# ============================================================================
+
+[webhooks]
+# Enable webhook notifications to external systems
+enabled = false
+
+# Webhook delivery settings
+retry_attempts = 3          # Number of retry attempts for failed deliveries
+retry_delay = 5             # Seconds to wait between retries
+timeout = 10                # Request timeout in seconds
+batch_size = 10             # Number of events to batch together
+batch_timeout = 30          # Seconds to wait before sending partial batch
+rate_limit = 100            # Maximum requests per minute
+
+# Security headers
+signature_header = "X-Firewall-Signature"    # Header name for HMAC signature
+timestamp_header = "X-Firewall-Timestamp"    # Header name for timestamp
+
+# Webhook endpoints - organizations can register multiple endpoints
+[[webhooks.endpoints]]
+name = "Security Operations Center"
+url = "https://soc.example.com/webhooks/firewall"
+secret = "your-webhook-secret-key-here"  # For HMAC signature verification
+enabled = true
+
+# Custom headers for this endpoint
+[webhooks.endpoints.headers]
+"X-Organization-ID" = "org-123"
+"X-Environment" = "production"
+
+# Event filtering for this endpoint (optional)
+[webhooks.endpoints.events]
+# Specify which events to send to this endpoint
+# If not specified, all events are sent
+include = [
+    "ip_blocked",
+    "ip_unblocked",
+    "port_scanning_detected",
+    "distributed_attack_detected"
+]
+# exclude = ["connection_attempt"]  # Events to exclude
+
+[[webhooks.endpoints]]
+name = "Incident Response Team"
+url = "https://ir.example.com/api/firewall-alerts"
+secret = "different-secret-for-ir-team"
+enabled = true
+
+[webhooks.endpoints.headers]
+"Authorization" = "Bearer your-api-token"
+"X-Team" = "incident-response"
+
+# Only send critical events to IR team
+[webhooks.endpoints.events]
+include = [
+    "ip_blocked",
+    "port_scanning_detected",
+    "distributed_attack_detected",
+    "block_error",
+    "unblock_error"
+]
+
+[[webhooks.endpoints]]
+name = "Analytics Platform"
+url = "https://analytics.example.com/firewall/events"
+enabled = false  # Disabled by default
+
+# No secret - public endpoint with API key in headers
+[webhooks.endpoints.headers]
+"X-API-Key" = "your-analytics-api-key"
+
+# Send all events for analytics
+# (no event filtering - all events will be sent)
+
+# ============================================================================
+# WEBHOOK EVENT TYPES
+# ============================================================================
+
+# The following events are available for webhook delivery:
+#
+# 1. firewall_started - Firewall initialization
+#    Data: mode, thresholds, configuration summary
+#
+# 2. connection_attempt - Every connection attempt (high volume)
+#    Data: ip, port, src_port, timestamp
+#
+# 3. ip_blocked - IP address blocked
+#    Data: ip, reason, block_count, additional_data
+#
+# 4. ip_unblocked - IP address unblocked
+#    Data: ip, reason, method
+#
+# 5. port_scanning_detected - Port scanning behavior detected
+#    Data: ip, unique_ports_scanned, threshold, ports, offense_count
+#
+# 6. distributed_attack_detected - Distributed attack on specific port
+#    Data: ip, port, attempts, threshold, attack_type
+#
+# 7. block_error - Error occurred while blocking IP
+#    Data: ip, reason, error, action
+#
+# 8. unblock_error - Error occurred while unblocking IP
+#    Data: ip, reason, error, action
+
+# ============================================================================
+# WEBHOOK PAYLOAD FORMAT
+# ============================================================================
+
+# Webhook payloads are sent as JSON with the following structure:
+# {
+#   "events": [
+#     {
+#       "id": "unique-event-id",
+#       "timestamp": "2024-01-01T12:00:00",
+#       "event_type": "ip_blocked",
+#       "version": "1.0",
+#       "source": "firewall",
+#       "data": {
+#         "ip": "192.168.1.100",
+#         "reason": "port_scanning",
+#         "action": "blocked",
+#         "method": "iptables",
+#         "block_count": 1
+#       }
+#     }
+#   ],
+#   "batch_size": 1,
+#   "timestamp": "2024-01-01T12:00:00"
+# }
+
+# ============================================================================
+# WEBHOOK SECURITY
+# ============================================================================
+
+# When a secret is configured for an endpoint, each webhook request includes:
+# 1. X-Firewall-Signature header with HMAC-SHA256 signature
+# 2. X-Firewall-Timestamp header with Unix timestamp
+#
+# To verify the signature in your webhook handler:
+# 1. Extract the signature from the X-Firewall-Signature header
+# 2. Compute HMAC-SHA256 of the request body using your secret
+# 3. Compare the computed signature with the received signature
+#
+# Example verification (Python):
+# import hmac
+# import hashlib
+#
+# def verify_signature(payload, signature, secret):
+#     expected = hmac.new(
+#         secret.encode('utf-8'),
+#         payload.encode('utf-8'),
+#         hashlib.sha256
+#     ).hexdigest()
+#     return hmac.compare_digest(f"sha256={expected}", signature)
 
 # Example 4: High Security Environment
 # mode = "aggressive"
